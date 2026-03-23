@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Blender</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; touch-action: none; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 0; left: 0; right: 0; padding: 16px 20px;
+    display: flex; justify-content: space-between; align-items: center;
+    z-index: 10; pointer-events: none;
+  }
+  #score, #level-label {
+    font-family: 'Helvetica Neue', sans-serif; font-weight: 800;
+    font-size: 22px; color: white; text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  #progress-wrap {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    width: 200px; height: 8px; background: rgba(255,255,255,0.15);
+    border-radius: 4px; z-index: 10; pointer-events: none;
+  }
+  #progress-bar {
+    height: 100%; width: 0%; background: linear-gradient(90deg, #e85d26, #ff9a56);
+    border-radius: 4px; transition: width 0.3s;
+  }
+  #start-screen, #level-screen {
+    position: fixed; inset: 0; z-index: 20;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    font-family: 'Helvetica Neue', sans-serif; color: white;
+  }
+  #level-screen { display: none; }
+  .title { font-size: 52px; font-weight: 900; letter-spacing: -2px; margin-bottom: 8px; }
+  .title span { color: #e85d26; }
+  .subtitle { font-size: 16px; color: rgba(255,255,255,0.4); margin-bottom: 40px; }
+  .btn {
+    padding: 16px 48px; background: #e85d26; color: white; border: none;
+    border-radius: 12px; font-size: 18px; font-weight: 700; cursor: pointer;
+    font-family: 'Helvetica Neue', sans-serif; touch-action: manipulation;
+  }
+  .btn:active { transform: scale(0.95); }
+  .level-title { font-size: 36px; font-weight: 800; margin-bottom: 12px; }
+  .level-sub { font-size: 14px; color: rgba(255,255,255,0.4); margin-bottom: 30px; }
+  #blender-icon {
+    width: 80px; height: 80px; border-radius: 50%;
+    background: radial-gradient(circle, #0a0a1a 30%, #e85d26 70%, transparent 72%);
+    margin-bottom: 24px; box-shadow: 0 0 30px rgba(232,93,38,0.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="start-screen">
+  <div id="blender-icon"></div>
+  <div class="title"><span>B</span>LENDER</div>
+  <div class="subtitle">Devour everything in your path</div>
+  <button class="btn" id="start-btn">PLAY</button>
+</div>
+
+<div id="level-screen">
+  <div class="level-title" id="level-title">Level 1</div>
+  <div class="level-sub" id="level-sub">Eat all the towers!</div>
+  <button class="btn" id="level-btn">GO</button>
+</div>
+
+<div id="ui">
+  <div id="score">0</div>
+  <div id="level-label">Level 1</div>
+</div>
+<div id="progress-wrap"><div id="progress-bar"></div></div>
+
+<canvas id="game"></canvas>
+
+<script>
+(function() {
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+  var W, H;
+
+  // Game state
+  var player, towers, particles, eaten, totalTowers, level, score, gameRunning;
+  var worldW, worldH, camX, camY;
+  var touchStartX, touchStartY, touchX, touchY, touching;
+  var bladeAngle = 0;
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Colors for towers
+  var COLORS = [
+    '#e85d26','#2E9ED6','#4ecdc4','#ffe66d','#ff6b6b',
+    '#a8e6cf','#dda0dd','#98d8c8','#f7dc6f','#bb8fce'
+  ];
+
+  function initLevel(lvl) {
+    level = lvl;
+    worldW = 1600 + lvl * 200;
+    worldH = 1600 + lvl * 200;
+    player = { x: worldW / 2, y: worldH / 2, r: 30 + lvl * 2, baseR: 30 + lvl * 2 };
+    towers = [];
+    particles = [];
+    eaten = 0;
+    totalTowers = 15 + lvl * 8;
+
+    for (var i = 0; i < totalTowers; i++) {
+      var tw = 20 + Math.random() * 30;
+      var th = 30 + Math.random() * 80 + lvl * 5;
+      var blocks = 2 + Math.floor(Math.random() * 4);
+      var towerBlocks = [];
+      var blockH = th / blocks;
+      for (var b = 0; b < blocks; b++) {
+        towerBlocks.push({ color: COLORS[Math.floor(Math.random() * COLORS.length)], h: blockH });
+      }
+      towers.push({
+        x: 80 + Math.random() * (worldW - 160),
+        y: 80 + Math.random() * (worldH - 160),
+        w: tw, h: th, blocks: towerBlocks,
+        falling: false, fallProgress: 0, fallAngle: 0, fallDir: 0,
+        absorbed: false, absorbProgress: 0,
+        size: tw * th // for size gating
+      });
+    }
+    // Sort so smaller towers have lower size value
+    towers.sort(function(a, b) { return a.size - b.size; });
+
+    document.getElementById('score').textContent = score;
+    document.getElementById('level-label').textContent = 'Level ' + level;
+  }
+
+  // Input handling
+  touching = false;
+  touchX = 0; touchY = 0;
+
+  canvas.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    touching = true;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchX = touchStartX;
+    touchY = touchStartY;
+  });
+  canvas.addEventListener('touchmove', function(e) {
+    e.preventDefault();
+    touchX = e.touches[0].clientX;
+    touchY = e.touches[0].clientY;
+  });
+  canvas.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    touching = false;
+  });
+
+  // Mouse fallback
+  var mouseDown = false;
+  canvas.addEventListener('mousedown', function(e) {
+    mouseDown = true;
+    touchStartX = e.clientX;
+    touchStartY = e.clientY;
+    touchX = e.clientX;
+    touchY = e.clientY;
+    touching = true;
+  });
+  canvas.addEventListener('mousemove', function(e) {
+    if (mouseDown) {
+      touchX = e.clientX;
+      touchY = e.clientY;
+    }
+  });
+  canvas.addEventListener('mouseup', function() {
+    mouseDown = false;
+    touching = false;
+  });
+
+  function spawnParticles(x, y, color, count) {
+    for (var i = 0; i < count; i++) {
+      var angle = Math.random() * Math.PI * 2;
+      var speed = 1 + Math.random() * 3;
+      particles.push({
+        x: x, y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        r: 2 + Math.random() * 3,
+        color: color,
+        life: 1
+      });
+    }
+  }
+
+  function update() {
+    if (!gameRunning) return;
+
+    // Move player via joystick-style drag
+    if (touching) {
+      var dx = touchX - touchStartX;
+      var dy = touchY - touchStartY;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 5) {
+        var speed = Math.min(dist * 0.06, 5);
+        player.x += (dx / dist) * speed;
+        player.y += (dy / dist) * speed;
+      }
+    }
+
+    // Clamp to world
+    player.x = Math.max(player.r, Math.min(worldW - player.r, player.x));
+    player.y = Math.max(player.r, Math.min(worldH - player.r, player.y));
+
+    // Blade rotation
+    bladeAngle += 0.08;
+
+    // Camera
+    camX = player.x - W / 2;
+    camY = player.y - H / 2;
+    camX = Math.max(0, Math.min(worldW - W, camX));
+    camY = Math.max(0, Math.min(worldH - H, camY));
+
+    // Check tower collisions
+    for (var i = towers.length - 1; i >= 0; i--) {
+      var t = towers[i];
+      if (t.absorbed) continue;
+
+      // Can we eat this tower? Only if blender is big enough relative to tower width
+      var canEat = player.r * 2 > t.w * 0.8;
+
+      if (!t.falling && canEat) {
+        var dx = (t.x + t.w / 2) - player.x;
+        var dy = (t.y + t.w / 2) - player.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < player.r + t.w * 0.3) {
+          t.falling = true;
+          t.fallDir = Math.atan2(dy, dx);
+        }
+      }
+
+      if (t.falling && !t.absorbed) {
+        t.fallProgress += 0.03;
+        if (t.fallProgress >= 1) {
+          t.absorbed = true;
+          eaten++;
+          score += Math.floor(t.h * t.w / 10);
+          // Grow the blender
+          player.r += t.w * 0.15;
+          document.getElementById('score').textContent = score;
+          spawnParticles(t.x + t.w / 2, t.y + t.w / 2, t.blocks[0].color, 8);
+        }
+      }
+    }
+
+    // Update particles
+    for (var i = particles.length - 1; i >= 0; i--) {
+      var p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= 0.025;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    // Progress bar
+    var pct = totalTowers > 0 ? (eaten / totalTowers) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+
+    // Level complete
+    if (eaten >= totalTowers) {
+      gameRunning = false;
+      setTimeout(function() { showLevelScreen(level + 1); }, 500);
+    }
+  }
+
+  function drawGround() {
+    // Ground
+    ctx.fillStyle = '#2a3a4a';
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 1;
+    var gridSize = 60;
+    var startX = -(camX % gridSize);
+    var startY = -(camY % gridSize);
+    for (var x = startX; x < W; x += gridSize) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (var y = startY; y < H; y += gridSize) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    // World border
+    ctx.strokeStyle = 'rgba(232,93,38,0.3)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-camX, -camY, worldW, worldH);
+  }
+
+  function drawBlender() {
+    var sx = player.x - camX;
+    var sy = player.y - camY;
+    var r = player.r;
+
+    // Shadow / hole
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    var grad = ctx.createRadialGradient(sx, sy, r * 0.1, sx, sy, r);
+    grad.addColorStop(0, '#0a0a12');
+    grad.addColorStop(0.7, '#12121f');
+    grad.addColorStop(1, '#1a1a2e');
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Spinning blades
+    ctx.strokeStyle = 'rgba(232,93,38,0.7)';
+    ctx.lineWidth = 2.5;
+    for (var i = 0; i < 4; i++) {
+      var a = bladeAngle + (Math.PI / 2) * i;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      var bx = sx + Math.cos(a) * r * 0.85;
+      var by = sy + Math.sin(a) * r * 0.85;
+      ctx.lineTo(bx, by);
+      // Curved blade tip
+      var tipA = a + 0.4;
+      var tx = sx + Math.cos(tipA) * r * 0.6;
+      var ty = sy + Math.sin(tipA) * r * 0.6;
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+    }
+
+    // Inner ring
+    ctx.beginPath();
+    ctx.arc(sx, sy, r * 0.2, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(232,93,38,0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Outer ring glow
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(232,93,38,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawTowers() {
+    // Sort by y for depth
+    var sorted = towers.filter(function(t) { return !t.absorbed; });
+    sorted.sort(function(a, b) { return a.y - b.y; });
+
+    for (var i = 0; i < sorted.length; i++) {
+      var t = sorted[i];
+      var sx = t.x - camX;
+      var sy = t.y - camY;
+
+      // Skip if off screen
+      if (sx + t.w < -50 || sx > W + 50 || sy + t.h < -50 || sy > H + 50) continue;
+
+      ctx.save();
+
+      if (t.falling) {
+        // Falling/shrinking into the blender
+        var progress = t.fallProgress;
+        var scale = 1 - progress;
+        var moveX = (player.x - camX - sx - t.w / 2) * progress;
+        var moveY = (player.y - camY - sy) * progress;
+        ctx.translate(sx + t.w / 2 + moveX, sy + moveY);
+        ctx.rotate(progress * t.fallDir * 2);
+        ctx.scale(scale, scale);
+        ctx.translate(-t.w / 2, 0);
+        ctx.globalAlpha = 1 - progress * 0.5;
+      } else {
+        ctx.translate(sx, sy);
+      }
+
+      // Draw shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.ellipse(t.w / 2, t.h + 4, t.w * 0.6, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Draw stacked blocks
+      var yOff = t.h;
+      for (var b = 0; b < t.blocks.length; b++) {
+        var block = t.blocks[b];
+        yOff -= block.h;
+
+        // Block face
+        ctx.fillStyle = block.color;
+        ctx.fillRect(0, yOff, t.w, block.h - 1);
+
+        // Light edge
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(0, yOff, t.w, 2);
+
+        // Dark edge
+        ctx.fillStyle = 'rgba(0,0,0,0.15)';
+        ctx.fillRect(0, yOff + block.h - 3, t.w, 2);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawParticles() {
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x - camX, p.y - camY, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    drawGround();
+    drawBlender();
+    drawTowers();
+    drawParticles();
+  }
+
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function showLevelScreen(lvl) {
+    document.getElementById('level-title').textContent = 'Level ' + lvl;
+    document.getElementById('level-sub').textContent = lvl > 1 ? 'Nice! Keep going!' : 'Eat all the towers!';
+    document.getElementById('level-screen').style.display = 'flex';
+  }
+
+  document.getElementById('start-btn').addEventListener('click', function() {
+    document.getElementById('start-screen').style.display = 'none';
+    score = 0;
+    initLevel(1);
+    gameRunning = true;
+    loop();
+  });
+
+  document.getElementById('level-btn').addEventListener('click', function() {
+    document.getElementById('level-screen').style.display = 'none';
+    initLevel(level);
+    gameRunning = true;
+  });
+
+})();
+</script>
+</body>
+</html>
