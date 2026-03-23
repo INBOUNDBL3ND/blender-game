@@ -20,6 +20,24 @@
     font-size: 16px; color: white;
   }
   .ui-box small { font-size: 10px; font-weight: 500; color: rgba(255,255,255,0.5); display: block; }
+  #timer-wrap {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 10; pointer-events: none; text-align: center;
+  }
+  #timer-box {
+    background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border-radius: 12px; padding: 6px 22px;
+    font-family: 'Helvetica Neue', sans-serif; font-weight: 900;
+    font-size: 32px; color: white; letter-spacing: 2px;
+    transition: color 0.3s;
+    min-width: 100px; display: inline-block;
+  }
+  #timer-box small { font-size: 9px; font-weight: 500; color: rgba(255,255,255,0.4); display: block; letter-spacing: 1px; }
+  #timer-box.urgent { color: #ff4444; animation: timerPulse 0.5s ease-in-out infinite alternate; }
+  @keyframes timerPulse {
+    0% { transform: scale(1); text-shadow: 0 0 0 transparent; }
+    100% { transform: scale(1.08); text-shadow: 0 0 20px rgba(255,60,60,0.6); }
+  }
   #size-indicator {
     position: fixed; top: 60px; left: 20px; z-index: 10; pointer-events: none;
   }
@@ -120,6 +138,42 @@
   }
   .level-title { font-size: 48px; font-weight: 900; margin-bottom: 8px; }
   .level-sub { font-size: 14px; color: rgba(255,255,255,0.35); margin-bottom: 32px; }
+  #gameover-screen {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', sans-serif; color: white;
+    overflow: hidden;
+  }
+  #gameover-bg {
+    position: absolute; inset: 0;
+    background: linear-gradient(135deg, #1a0a0a 0%, #2a1020 40%, #0d1520 100%);
+  }
+  #gameover-content {
+    position: relative; z-index: 2; text-align: center;
+  }
+  .gameover-title {
+    font-size: 52px; font-weight: 900; color: #ff4444;
+    text-shadow: 0 0 40px rgba(255,60,60,0.4);
+    margin-bottom: 8px; letter-spacing: 2px;
+  }
+  .gameover-subtitle {
+    font-size: 14px; color: rgba(255,255,255,0.35); margin-bottom: 28px;
+    text-transform: uppercase; letter-spacing: 3px;
+  }
+  .gameover-stats {
+    display: flex; gap: 24px; justify-content: center; margin-bottom: 36px;
+  }
+  .gameover-stat {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px; padding: 16px 24px; min-width: 100px;
+  }
+  .gameover-stat-val {
+    font-size: 28px; font-weight: 900; color: #e85d26;
+  }
+  .gameover-stat-label {
+    font-size: 10px; color: rgba(255,255,255,0.35); text-transform: uppercase;
+    letter-spacing: 1px; margin-top: 4px;
+  }
   #too-small {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
     font-family: 'Helvetica Neue', sans-serif; font-size: 14px; font-weight: 600;
@@ -170,9 +224,35 @@
   <button class="btn" id="level-btn">GO</button>
 </div>
 
+<div id="gameover-screen">
+  <div id="gameover-bg"></div>
+  <div id="gameover-content">
+    <div class="gameover-title">TIME'S UP!</div>
+    <div class="gameover-subtitle">The city survived</div>
+    <div class="gameover-stats">
+      <div class="gameover-stat">
+        <div class="gameover-stat-val" id="go-score">0</div>
+        <div class="gameover-stat-label">Score</div>
+      </div>
+      <div class="gameover-stat">
+        <div class="gameover-stat-val" id="go-eaten">0</div>
+        <div class="gameover-stat-label">Buildings</div>
+      </div>
+      <div class="gameover-stat">
+        <div class="gameover-stat-val" id="go-level">1</div>
+        <div class="gameover-stat-label">Level</div>
+      </div>
+    </div>
+    <button class="btn" id="gameover-btn">TRY AGAIN</button>
+  </div>
+</div>
+
 <div id="ui">
   <div class="ui-box"><small>SCORE</small><span id="score">0</span></div>
   <div class="ui-box"><small>LEVEL</small><span id="level-label">1</span></div>
+</div>
+<div id="timer-wrap">
+  <div id="timer-box"><small>TIME</small><span id="timer-val">1:30</span></div>
 </div>
 <div id="size-indicator">
   <div id="size-label">BLENDER SIZE</div>
@@ -202,6 +282,18 @@
   var trailPoints = []; // Ground disturbance trail
   var playerVX = 0, playerVY = 0; // Velocity for smooth acceleration
 
+  // Timer variables
+  var timerTotal = 90; // seconds for level 1
+  var timerLeft = 90;
+  var timerLastTick = 0;
+  var gameTime = 0; // for animations (water, etc)
+
+  // Terrain features
+  var lakes = [];
+  var rivers = [];
+  var parks = [];
+  var grassPatches = [];
+
   var CAR_COLORS = ['#cc3333','#3366cc','#33aa33','#eeee33','#ffffff','#222222','#cc6600','#8833aa','#cc3388','#44cccc'];
   var SKIN_COLORS = ['#f4c7a0','#d4a06a','#8d5524','#c68642','#e8b88a','#6b4423'];
   var SHIRT_COLORS = ['#cc3333','#3366cc','#33aa33','#eeee33','#ff6600','#8833aa','#cc3388','#ffffff','#333333','#44cccc'];
@@ -223,6 +315,97 @@
   ];
 
   var TYPES = ['house', 'office', 'skyscraper', 'shop', 'apartment'];
+
+  // Seeded random for consistent terrain
+  function seededRandom(seed) {
+    var x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+  }
+
+  // Generate irregular lake shape as array of points
+  function generateLakeShape(cx, cy, baseR, numPoints) {
+    var points = [];
+    for (var i = 0; i < numPoints; i++) {
+      var angle = (i / numPoints) * Math.PI * 2;
+      var rVar = baseR * (0.6 + seededRandom(cx * 100 + cy * 200 + i * 37) * 0.8);
+      points.push({
+        x: cx + Math.cos(angle) * rVar,
+        y: cy + Math.sin(angle) * rVar,
+        r: rVar
+      });
+    }
+    return points;
+  }
+
+  // Generate a winding river as a series of control points
+  function generateRiverPath(startX, startY, endX, endY, segments) {
+    var points = [{x: startX, y: startY}];
+    var dx = endX - startX;
+    var dy = endY - startY;
+    for (var i = 1; i < segments; i++) {
+      var t = i / segments;
+      var baseX = startX + dx * t;
+      var baseY = startY + dy * t;
+      // Winding offset perpendicular to direction
+      var perpX = -dy / Math.sqrt(dx*dx + dy*dy);
+      var perpY = dx / Math.sqrt(dx*dx + dy*dy);
+      var wander = Math.sin(t * Math.PI * 3 + startX * 0.01) * 80 + Math.sin(t * Math.PI * 5) * 40;
+      points.push({
+        x: baseX + perpX * wander,
+        y: baseY + perpY * wander
+      });
+    }
+    points.push({x: endX, y: endY});
+    return points;
+  }
+
+  // Check if a point is inside a lake
+  function pointInLake(px, py) {
+    for (var li = 0; li < lakes.length; li++) {
+      var lake = lakes[li];
+      var dx = px - lake.cx;
+      var dy = py - lake.cy;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < lake.baseR * 1.1) return true;
+    }
+    return false;
+  }
+
+  // Check if a point is inside a river (within width)
+  function pointInRiver(px, py) {
+    for (var ri = 0; ri < rivers.length; ri++) {
+      var river = rivers[ri];
+      for (var pi = 0; pi < river.points.length - 1; pi++) {
+        var p1 = river.points[pi];
+        var p2 = river.points[pi + 1];
+        // Distance from point to line segment
+        var ldx = p2.x - p1.x;
+        var ldy = p2.y - p1.y;
+        var len2 = ldx * ldx + ldy * ldy;
+        if (len2 === 0) continue;
+        var t = Math.max(0, Math.min(1, ((px - p1.x) * ldx + (py - p1.y) * ldy) / len2));
+        var projX = p1.x + t * ldx;
+        var projY = p1.y + t * ldy;
+        var dist = Math.sqrt((px - projX) * (px - projX) + (py - projY) * (py - projY));
+        if (dist < river.width / 2 + 5) return true;
+      }
+    }
+    return false;
+  }
+
+  // Check if a point is in water (lake or river)
+  function pointInWater(px, py) {
+    return pointInLake(px, py) || pointInRiver(px, py);
+  }
+
+  // Check if point is in a park
+  function pointInPark(px, py) {
+    for (var pi = 0; pi < parks.length; pi++) {
+      var park = parks[pi];
+      if (px >= park.x && px <= park.x + park.w && py >= park.y && py <= park.y + park.h) return true;
+    }
+    return false;
+  }
 
   function makeBuilding(x, y, sizeClass) {
     var pal = PALETTES[Math.floor(Math.random() * PALETTES.length)];
@@ -315,6 +498,12 @@
     eaten = 0;
     maxBuildingW = 0;
 
+    // Timer: level 1 = 90s, each level adds 15s
+    timerTotal = 90 + (lvl - 1) * 15;
+    timerLeft = timerTotal;
+    timerLastTick = Date.now();
+    gameTime = 0;
+
     // Initialize smooth camera
     smoothCamX = player.x - W / 2;
     smoothCamY = player.y - H / 2;
@@ -324,17 +513,140 @@
     var cols = Math.floor(worldW / (blockSize + roadW));
     var rows = Math.floor(worldH / (blockSize + roadW));
 
+    // Generate terrain features FIRST
+
+    // Generate grass color patches
+    grassPatches = [];
+    for (var gi = 0; gi < 300 + lvl * 30; gi++) {
+      grassPatches.push({
+        x: Math.random() * worldW,
+        y: Math.random() * worldH,
+        r: 15 + Math.random() * 40,
+        shade: Math.random() > 0.5
+          ? 'rgba(60,140,50,' + (0.15 + Math.random() * 0.2) + ')'
+          : 'rgba(80,110,40,' + (0.15 + Math.random() * 0.2) + ')'
+      });
+    }
+
+    // Generate lakes
+    lakes = [];
+    var numLakes = 3 + Math.floor(lvl * 0.5);
+    for (var li = 0; li < numLakes; li++) {
+      var lx = 150 + Math.random() * (worldW - 300);
+      var ly = 150 + Math.random() * (worldH - 300);
+      var lr = 50 + Math.random() * 80;
+      // Make sure lakes don't overlap with world center too much (player start)
+      var dcx = lx - worldW / 2;
+      var dcy = ly - worldH / 2;
+      if (Math.sqrt(dcx * dcx + dcy * dcy) < 150) { li--; continue; }
+      var shape = generateLakeShape(lx, ly, lr, 12 + Math.floor(Math.random() * 6));
+      lakes.push({ cx: lx, cy: ly, baseR: lr, points: shape, waveOffset: Math.random() * Math.PI * 2 });
+    }
+
+    // Generate rivers connecting some lakes or crossing the map
+    rivers = [];
+    var numRivers = 1 + Math.floor(lvl * 0.3);
+    for (var ri = 0; ri < numRivers && ri < 4; ri++) {
+      var rsx, rsy, rex, rey;
+      if (lakes.length >= 2 && ri < lakes.length - 1) {
+        // Connect two lakes
+        rsx = lakes[ri].cx;
+        rsy = lakes[ri].cy;
+        rex = lakes[(ri + 1) % lakes.length].cx;
+        rey = lakes[(ri + 1) % lakes.length].cy;
+      } else {
+        // Random river across map
+        if (Math.random() > 0.5) {
+          rsx = 0; rsy = 100 + Math.random() * (worldH - 200);
+          rex = worldW; rey = 100 + Math.random() * (worldH - 200);
+        } else {
+          rsx = 100 + Math.random() * (worldW - 200); rsy = 0;
+          rex = 100 + Math.random() * (worldW - 200); rey = worldH;
+        }
+      }
+      var rPath = generateRiverPath(rsx, rsy, rex, rey, 10 + Math.floor(Math.random() * 6));
+      rivers.push({ points: rPath, width: 18 + Math.random() * 14, flowOffset: Math.random() * Math.PI * 2 });
+    }
+
+    // Designate some blocks as parks
+    parks = [];
+    var parkChance = 0.12;
+    for (var col = 0; col < cols; col++) {
+      for (var row = 0; row < rows; row++) {
+        if (Math.random() < parkChance) {
+          var parkX = roadW + col * (blockSize + roadW);
+          var parkY = roadW + row * (blockSize + roadW);
+          // Don't put park right at player start
+          var pdcx = (parkX + blockSize / 2) - worldW / 2;
+          var pdcy = (parkY + blockSize / 2) - worldH / 2;
+          if (Math.sqrt(pdcx * pdcx + pdcy * pdcy) < 200) continue;
+          parks.push({
+            x: parkX, y: parkY, w: blockSize, h: blockSize,
+            col: col, row: row,
+            hasPond: Math.random() > 0.5,
+            pondX: parkX + 40 + Math.random() * 120,
+            pondY: parkY + 40 + Math.random() * 120,
+            pondR: 15 + Math.random() * 20,
+            paths: [] // walking paths generated below
+          });
+          // Generate 2-3 walking paths
+          var park = parks[parks.length - 1];
+          var numPaths = 2 + Math.floor(Math.random() * 2);
+          for (var pp = 0; pp < numPaths; pp++) {
+            var pathPoints = [];
+            var horizontal = Math.random() > 0.5;
+            if (horizontal) {
+              var py = parkY + 20 + Math.random() * (blockSize - 40);
+              for (var px = parkX; px <= parkX + blockSize; px += 20) {
+                pathPoints.push({ x: px, y: py + Math.sin(px * 0.03) * 15 });
+              }
+            } else {
+              var px2 = parkX + 20 + Math.random() * (blockSize - 40);
+              for (var py2 = parkY; py2 <= parkY + blockSize; py2 += 20) {
+                pathPoints.push({ x: px2 + Math.sin(py2 * 0.03) * 15, y: py2 });
+              }
+            }
+            park.paths.push(pathPoints);
+          }
+        }
+      }
+    }
+
     // Building distribution: 6 size classes now (0-5)
-    // More large buildings, mega skyscrapers in later levels
     var sizeWeights;
     if (lvl <= 2) sizeWeights = [0.30, 0.25, 0.18, 0.12, 0.10, 0.05];
     else if (lvl <= 4) sizeWeights = [0.15, 0.20, 0.22, 0.18, 0.15, 0.10];
     else sizeWeights = [0.08, 0.12, 0.18, 0.22, 0.22, 0.18];
 
+    // Track which blocks are parks
+    var parkSet = {};
+    for (var pi = 0; pi < parks.length; pi++) {
+      parkSet[parks[pi].col + ',' + parks[pi].row] = true;
+    }
+
     for (var col = 0; col < cols; col++) {
       for (var row = 0; row < rows; row++) {
         var blockX = roadW + col * (blockSize + roadW);
         var blockY = roadW + row * (blockSize + roadW);
+
+        // Skip park blocks for buildings
+        if (parkSet[col + ',' + row]) {
+          // Add extra trees for parks
+          var parkTreeCount = 8 + Math.floor(Math.random() * 8);
+          for (var pti = 0; pti < parkTreeCount; pti++) {
+            var tx = blockX + 10 + Math.random() * (blockSize - 20);
+            var ty = blockY + 10 + Math.random() * (blockSize - 20);
+            if (!pointInWater(tx, ty)) {
+              trees.push({
+                x: tx, y: ty,
+                r: 6 + Math.random() * 8,
+                shade: ['#3a7a4a','#4a8a3a','#2d6b3a','#5a9a4a','#3d8040'][Math.floor(Math.random()*5)],
+                absorbed: false
+              });
+            }
+          }
+          continue;
+        }
 
         var numBuildings = 2 + Math.floor(Math.random() * 4);
         for (var b = 0; b < numBuildings; b++) {
@@ -348,6 +660,8 @@
 
           var bx = blockX + 15 + Math.random() * (blockSize - 80);
           var by = blockY + 15 + Math.random() * (blockSize - 80);
+          // Don't place buildings in water
+          if (pointInWater(bx, by)) continue;
           var building = makeBuilding(bx, by, sizeClass);
           buildings.push(building);
           if (building.w > maxBuildingW) maxBuildingW = building.w;
@@ -355,13 +669,16 @@
 
         var numTrees = Math.floor(Math.random() * 3);
         for (var ti = 0; ti < numTrees; ti++) {
-          trees.push({
-            x: blockX + 10 + Math.random() * (blockSize - 20),
-            y: blockY + 10 + Math.random() * (blockSize - 20),
-            r: 5 + Math.random() * 6,
-            shade: Math.random() > 0.5 ? '#3a7a4a' : '#4a8a3a',
-            absorbed: false
-          });
+          var ttx = blockX + 10 + Math.random() * (blockSize - 20);
+          var tty = blockY + 10 + Math.random() * (blockSize - 20);
+          if (!pointInWater(ttx, tty)) {
+            trees.push({
+              x: ttx, y: tty,
+              r: 5 + Math.random() * 6,
+              shade: Math.random() > 0.5 ? '#3a7a4a' : '#4a8a3a',
+              absorbed: false
+            });
+          }
         }
       }
     }
@@ -424,11 +741,34 @@
     document.getElementById('score').textContent = score;
     document.getElementById('level-label').textContent = level;
     updateSizeBar();
+    updateTimerDisplay();
   }
 
   function updateSizeBar() {
     var pct = Math.min(100, ((player.r - player.startR) / (maxBuildingW * 0.8)) * 100 + 15);
     document.getElementById('size-bar').style.width = pct + '%';
+  }
+
+  function updateTimerDisplay() {
+    var secs = Math.max(0, Math.ceil(timerLeft));
+    var min = Math.floor(secs / 60);
+    var sec = secs % 60;
+    var display = min + ':' + (sec < 10 ? '0' : '') + sec;
+    document.getElementById('timer-val').textContent = display;
+    var timerBox = document.getElementById('timer-box');
+    if (timerLeft <= 15) {
+      timerBox.classList.add('urgent');
+    } else {
+      timerBox.classList.remove('urgent');
+    }
+  }
+
+  function showGameOver() {
+    gameRunning = false;
+    document.getElementById('go-score').textContent = score;
+    document.getElementById('go-eaten').textContent = eaten;
+    document.getElementById('go-level').textContent = level;
+    document.getElementById('gameover-screen').style.display = 'flex';
   }
 
   // Input
@@ -462,13 +802,29 @@
   function getZoom() {
     var baseZoom = 1.0;
     var growthRatio = player.r / player.startR;
-    // Gradually zoom out as blender grows; at 4x size, zoom is ~0.55
     var zoom = baseZoom / (1 + (growthRatio - 1) * 0.15);
     return Math.max(0.3, Math.min(1.0, zoom));
   }
 
   function update() {
     if (!gameRunning) return;
+
+    gameTime += 0.016; // ~60fps time increment
+
+    // Update timer
+    var now = Date.now();
+    if (timerLastTick > 0) {
+      var dt = (now - timerLastTick) / 1000;
+      timerLeft -= dt;
+      if (timerLeft <= 0) {
+        timerLeft = 0;
+        updateTimerDisplay();
+        showGameOver();
+        return;
+      }
+    }
+    timerLastTick = now;
+    updateTimerDisplay();
 
     // Smooth acceleration/deceleration
     var accel = 0.15;
@@ -499,8 +855,34 @@
       playerVY = (playerVY / vel) * maxSpeed;
     }
 
-    player.x += playerVX;
-    player.y += playerVY;
+    // Proposed new position
+    var newX = player.x + playerVX;
+    var newY = player.y + playerVY;
+
+    // Water collision - push blender out of water
+    if (pointInWater(newX, newY)) {
+      // Find nearest non-water position by pushing back
+      // Try just X
+      if (!pointInWater(player.x, newY)) {
+        newX = player.x;
+        playerVX = -playerVX * 0.3;
+      }
+      // Try just Y
+      else if (!pointInWater(newX, player.y)) {
+        newY = player.y;
+        playerVY = -playerVY * 0.3;
+      }
+      // Both blocked, stay put
+      else {
+        newX = player.x;
+        newY = player.y;
+        playerVX = -playerVX * 0.3;
+        playerVY = -playerVY * 0.3;
+      }
+    }
+
+    player.x = newX;
+    player.y = newY;
 
     player.x = Math.max(player.r, Math.min(worldW - player.r, player.x));
     player.y = Math.max(player.r, Math.min(worldH - player.r, player.y));
@@ -583,7 +965,7 @@
           b.absorbed = true;
           eaten++;
           score += Math.floor(b.h * b.w / 8) * (b.sizeClass + 1);
-          // Halved growth: b.w * 0.018 -> b.w * 0.009, sizeClass * 0.2 -> sizeClass * 0.1
+          // Halved growth
           player.r += b.w * 0.009 + b.sizeClass * 0.1;
           document.getElementById('score').textContent = score;
           updateSizeBar();
@@ -639,6 +1021,245 @@
     }
   }
 
+  function drawLake(lake) {
+    var zoom = getZoom();
+    var cx = (lake.cx - camX) * zoom;
+    var cy = (lake.cy - camY) * zoom;
+    var br = lake.baseR * zoom;
+
+    // Quick cull
+    if (cx + br * 1.5 < 0 || cx - br * 1.5 > W || cy + br * 1.5 < 0 || cy - br * 1.5 > H) return;
+
+    var pts = lake.points;
+    var waveT = gameTime * 1.2 + lake.waveOffset;
+
+    // Shore/beach ring
+    ctx.beginPath();
+    for (var i = 0; i <= pts.length; i++) {
+      var p = pts[i % pts.length];
+      var pNext = pts[(i + 1) % pts.length];
+      var sx = (p.x - camX) * zoom + Math.sin(waveT + i * 0.7) * 2 * zoom;
+      var sy = (p.y - camY) * zoom + Math.cos(waveT + i * 0.5) * 2 * zoom;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else {
+        var snx = (pNext.x - camX) * zoom + Math.sin(waveT + (i+1) * 0.7) * 2 * zoom;
+        var sny = (pNext.y - camY) * zoom + Math.cos(waveT + (i+1) * 0.5) * 2 * zoom;
+        ctx.quadraticCurveTo(sx, sy, (sx + snx) / 2, (sy + sny) / 2);
+      }
+    }
+    ctx.closePath();
+    // Sandy shore
+    ctx.fillStyle = '#c2b280';
+    ctx.save();
+    ctx.lineWidth = 8 * zoom;
+    ctx.strokeStyle = 'rgba(194,178,128,0.4)';
+    ctx.stroke();
+    ctx.restore();
+
+    // Light blue shore water
+    ctx.fillStyle = '#5a9abd';
+    ctx.fill();
+
+    // Inner darker water
+    ctx.beginPath();
+    for (var i = 0; i <= pts.length; i++) {
+      var p = pts[i % pts.length];
+      var pNext = pts[(i + 1) % pts.length];
+      var innerScale = 0.7;
+      var ipx = lake.cx + (p.x - lake.cx) * innerScale;
+      var ipy = lake.cy + (p.y - lake.cy) * innerScale;
+      var sx = (ipx - camX) * zoom + Math.sin(waveT * 0.8 + i) * 1.5 * zoom;
+      var sy = (ipy - camY) * zoom + Math.cos(waveT * 0.8 + i) * 1.5 * zoom;
+      var inpx = lake.cx + (pNext.x - lake.cx) * innerScale;
+      var inpy = lake.cy + (pNext.y - lake.cy) * innerScale;
+      var snx = (inpx - camX) * zoom + Math.sin(waveT * 0.8 + i + 1) * 1.5 * zoom;
+      var sny = (inpy - camY) * zoom + Math.cos(waveT * 0.8 + i + 1) * 1.5 * zoom;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.quadraticCurveTo(sx, sy, (sx + snx) / 2, (sy + sny) / 2);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#3a7aaa';
+    ctx.fill();
+
+    // Wave highlights
+    for (var w = 0; w < 4; w++) {
+      var wa = waveT * 1.5 + w * 1.5;
+      var wr = br * (0.3 + w * 0.12);
+      ctx.beginPath();
+      ctx.arc(cx + Math.sin(wa) * br * 0.15, cy + Math.cos(wa * 0.7) * br * 0.15, wr, wa, wa + 0.8);
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.08 - w * 0.015) + ')';
+      ctx.lineWidth = 1.5 * zoom;
+      ctx.stroke();
+    }
+  }
+
+  function drawRiver(river) {
+    var zoom = getZoom();
+    var pts = river.points;
+    var waveT = gameTime * 1.5 + river.flowOffset;
+    var rw = river.width * zoom;
+
+    // Quick cull - check if any point is visible
+    var anyVisible = false;
+    for (var i = 0; i < pts.length; i++) {
+      var sx = (pts[i].x - camX) * zoom;
+      var sy = (pts[i].y - camY) * zoom;
+      if (sx > -rw * 2 && sx < W + rw * 2 && sy > -rw * 2 && sy < H + rw * 2) {
+        anyVisible = true;
+        break;
+      }
+    }
+    if (!anyVisible) return;
+
+    // River bank (wider, sandy)
+    ctx.beginPath();
+    ctx.lineWidth = (river.width + 10) * zoom;
+    ctx.strokeStyle = 'rgba(160,145,110,0.5)';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = 0; i < pts.length; i++) {
+      var sx = (pts[i].x - camX) * zoom;
+      var sy = (pts[i].y - camY) * zoom;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+
+    // Main water body
+    ctx.beginPath();
+    ctx.lineWidth = river.width * zoom;
+    ctx.strokeStyle = '#4a8aaa';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = 0; i < pts.length; i++) {
+      var sx = (pts[i].x - camX) * zoom;
+      var sy = (pts[i].y - camY) * zoom;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+
+    // Darker center line
+    ctx.beginPath();
+    ctx.lineWidth = river.width * 0.4 * zoom;
+    ctx.strokeStyle = '#3a6a8a';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = 0; i < pts.length; i++) {
+      var sx = (pts[i].x - camX) * zoom;
+      var sy = (pts[i].y - camY) * zoom;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+
+    // Current/flow lines animation
+    for (var fl = 0; fl < 6; fl++) {
+      var flowT = (waveT * 0.3 + fl * 0.35) % 1;
+      // Find position along river at flowT
+      var totalIdx = flowT * (pts.length - 1);
+      var idx = Math.floor(totalIdx);
+      var frac = totalIdx - idx;
+      if (idx >= pts.length - 1) continue;
+      var fx = pts[idx].x + (pts[idx + 1].x - pts[idx].x) * frac;
+      var fy = pts[idx].y + (pts[idx + 1].y - pts[idx].y) * frac;
+      var fsx = (fx - camX) * zoom;
+      var fsy = (fy - camY) * zoom;
+
+      // Flow direction
+      var fdx = pts[Math.min(idx + 1, pts.length - 1)].x - pts[idx].x;
+      var fdy = pts[Math.min(idx + 1, pts.length - 1)].y - pts[idx].y;
+      var flen = Math.sqrt(fdx * fdx + fdy * fdy);
+      if (flen > 0) { fdx /= flen; fdy /= flen; }
+
+      ctx.beginPath();
+      ctx.moveTo(fsx - fdx * 6 * zoom, fsy - fdy * 6 * zoom);
+      ctx.lineTo(fsx + fdx * 6 * zoom, fsy + fdy * 6 * zoom);
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1.5 * zoom;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+  }
+
+  function drawPark(park) {
+    var zoom = getZoom();
+    var px = (park.x - camX) * zoom;
+    var py = (park.y - camY) * zoom;
+    var pw = park.w * zoom;
+    var ph = park.h * zoom;
+
+    // Cull
+    if (px + pw < 0 || px > W || py + ph < 0 || py > H) return;
+
+    // Slightly different green for park ground
+    ctx.fillStyle = '#4a8a3a';
+    ctx.fillRect(px, py, pw, ph);
+
+    // Lighter center area
+    ctx.fillStyle = 'rgba(90,160,70,0.3)';
+    ctx.fillRect(px + 10 * zoom, py + 10 * zoom, pw - 20 * zoom, ph - 20 * zoom);
+
+    // Walking paths
+    ctx.strokeStyle = '#b0a080';
+    ctx.lineWidth = 4 * zoom;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var pi = 0; pi < park.paths.length; pi++) {
+      var path = park.paths[pi];
+      ctx.beginPath();
+      for (var pp = 0; pp < path.length; pp++) {
+        var ppx = (path[pp].x - camX) * zoom;
+        var ppy = (path[pp].y - camY) * zoom;
+        if (pp === 0) ctx.moveTo(ppx, ppy);
+        else ctx.lineTo(ppx, ppy);
+      }
+      ctx.stroke();
+      // Path edge lines
+      ctx.strokeStyle = 'rgba(140,120,90,0.3)';
+      ctx.lineWidth = 6 * zoom;
+      ctx.beginPath();
+      for (var pp = 0; pp < path.length; pp++) {
+        var ppx = (path[pp].x - camX) * zoom;
+        var ppy = (path[pp].y - camY) * zoom;
+        if (pp === 0) ctx.moveTo(ppx, ppy);
+        else ctx.lineTo(ppx, ppy);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = '#b0a080';
+      ctx.lineWidth = 4 * zoom;
+    }
+
+    // Pond in park
+    if (park.hasPond) {
+      var pondSX = (park.pondX - camX) * zoom;
+      var pondSY = (park.pondY - camY) * zoom;
+      var pondSR = park.pondR * zoom;
+      var wt = gameTime * 1.2;
+      // Shore
+      ctx.beginPath();
+      ctx.ellipse(pondSX, pondSY, pondSR + 3 * zoom, pondSR * 0.7 + 3 * zoom, 0, 0, Math.PI * 2);
+      ctx.fillStyle = '#c2b280';
+      ctx.fill();
+      // Water
+      ctx.beginPath();
+      ctx.ellipse(pondSX, pondSY, pondSR, pondSR * 0.7, 0, 0, Math.PI * 2);
+      ctx.fillStyle = '#5a9abd';
+      ctx.fill();
+      // Center darker
+      ctx.beginPath();
+      ctx.ellipse(pondSX, pondSY, pondSR * 0.5, pondSR * 0.35, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(50,100,150,0.3)';
+      ctx.fill();
+      // Ripple
+      ctx.beginPath();
+      ctx.arc(pondSX + Math.sin(wt) * pondSR * 0.2, pondSY + Math.cos(wt * 0.7) * pondSR * 0.15, pondSR * 0.3, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
   function drawGround() {
     var zoom = getZoom();
 
@@ -646,10 +1267,28 @@
     ctx.fillStyle = '#4a7a3a';
     ctx.fillRect(0, 0, W, H);
 
+    // Grass color variation patches
+    for (var gi = 0; gi < grassPatches.length; gi++) {
+      var gp = grassPatches[gi];
+      var gsx = (gp.x - camX) * zoom;
+      var gsy = (gp.y - camY) * zoom;
+      var gr = gp.r * zoom;
+      if (gsx + gr < 0 || gsx - gr > W || gsy + gr < 0 || gsy - gr > H) continue;
+      ctx.beginPath();
+      ctx.arc(gsx, gsy, gr, 0, Math.PI * 2);
+      ctx.fillStyle = gp.shade;
+      ctx.fill();
+    }
+
     var roadW = 40;
     var blockSize = 200;
     var cols = Math.floor(worldW / (blockSize + roadW)) + 1;
     var rows = Math.floor(worldH / (blockSize + roadW)) + 1;
+
+    // Draw parks (green spaces under everything)
+    for (var pi = 0; pi < parks.length; pi++) {
+      drawPark(parks[pi]);
+    }
 
     // Draw trail/disturbance on ground
     for (var ti = 0; ti < trailPoints.length; ti++) {
@@ -697,6 +1336,43 @@
       ctx.setLineDash([]);
     }
 
+    // Crosswalks at intersections
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    for (var col = 0; col <= cols; col++) {
+      for (var row = 0; row <= rows; row++) {
+        var ix = (col * (blockSize + roadW) - camX) * zoom;
+        var iy = (row * (blockSize + roadW) - camY) * zoom;
+        var rw = roadW * zoom;
+        // Cull
+        if (ix + rw < -20 || ix > W + 20 || iy + rw < -20 || iy > H + 20) continue;
+
+        // Horizontal crosswalks (across vertical roads) - above and below intersection
+        var stripeW = 3 * zoom;
+        var stripeGap = 4 * zoom;
+        var stripeLen = rw * 0.7;
+        // Top crosswalk
+        for (var si = 0; si < 5; si++) {
+          var sy = iy - 3 * zoom - si * (stripeW + stripeGap);
+          ctx.fillRect(ix + (rw - stripeLen) / 2, sy, stripeLen, stripeW);
+        }
+        // Bottom crosswalk
+        for (var si = 0; si < 5; si++) {
+          var sy = iy + rw + 3 * zoom + si * (stripeW + stripeGap);
+          ctx.fillRect(ix + (rw - stripeLen) / 2, sy, stripeLen, stripeW);
+        }
+        // Left crosswalk
+        for (var si = 0; si < 5; si++) {
+          var sx = ix - 3 * zoom - si * (stripeW + stripeGap);
+          ctx.fillRect(sx, iy + (rw - stripeLen) / 2, stripeW, stripeLen);
+        }
+        // Right crosswalk
+        for (var si = 0; si < 5; si++) {
+          var sx = ix + rw + 3 * zoom + si * (stripeW + stripeGap);
+          ctx.fillRect(sx, iy + (rw - stripeLen) / 2, stripeW, stripeLen);
+        }
+      }
+    }
+
     // Sidewalks along roads
     ctx.fillStyle = '#999';
     for (var col = 0; col <= cols; col++) {
@@ -708,6 +1384,16 @@
       var ry = (row * (blockSize + roadW) - camY) * zoom;
       ctx.fillRect(-camX * zoom, ry - 4 * zoom, worldW * zoom, 4 * zoom);
       ctx.fillRect(-camX * zoom, ry + roadW * zoom, worldW * zoom, 4 * zoom);
+    }
+
+    // Draw rivers on top of terrain (but under buildings)
+    for (var ri = 0; ri < rivers.length; ri++) {
+      drawRiver(rivers[ri]);
+    }
+
+    // Draw lakes on top of terrain (but under buildings)
+    for (var li = 0; li < lakes.length; li++) {
+      drawLake(lakes[li]);
     }
   }
 
@@ -1250,6 +1936,37 @@
       minimapCtx.fillRect(0, ry, mw, roadW * scaleY);
     }
 
+    // Draw lakes on minimap
+    minimapCtx.fillStyle = 'rgba(60,120,180,0.5)';
+    for (var li = 0; li < lakes.length; li++) {
+      var lake = lakes[li];
+      minimapCtx.beginPath();
+      minimapCtx.arc(lake.cx * scaleX, lake.cy * scaleY, lake.baseR * scaleX, 0, Math.PI * 2);
+      minimapCtx.fill();
+    }
+
+    // Draw rivers on minimap
+    minimapCtx.strokeStyle = 'rgba(60,120,180,0.5)';
+    minimapCtx.lineCap = 'round';
+    for (var ri = 0; ri < rivers.length; ri++) {
+      var river = rivers[ri];
+      minimapCtx.lineWidth = river.width * scaleX;
+      minimapCtx.beginPath();
+      for (var pi = 0; pi < river.points.length; pi++) {
+        var p = river.points[pi];
+        if (pi === 0) minimapCtx.moveTo(p.x * scaleX, p.y * scaleY);
+        else minimapCtx.lineTo(p.x * scaleX, p.y * scaleY);
+      }
+      minimapCtx.stroke();
+    }
+
+    // Draw parks on minimap
+    minimapCtx.fillStyle = 'rgba(60,140,50,0.4)';
+    for (var pi = 0; pi < parks.length; pi++) {
+      var park = parks[pi];
+      minimapCtx.fillRect(park.x * scaleX, park.y * scaleY, park.w * scaleX, park.h * scaleY);
+    }
+
     // Draw remaining buildings as dots
     for (var i = 0; i < buildings.length; i++) {
       var b = buildings[i];
@@ -1257,7 +1974,6 @@
       var bx = b.x * scaleX;
       var by = b.y * scaleY;
       var bs = Math.max(1.5, b.w * scaleX);
-      // Color by size class
       if (b.sizeClass <= 1) minimapCtx.fillStyle = 'rgba(150,150,150,0.6)';
       else if (b.sizeClass <= 3) minimapCtx.fillStyle = 'rgba(200,180,100,0.7)';
       else minimapCtx.fillStyle = 'rgba(255,120,50,0.8)';
@@ -1415,6 +2131,13 @@
 
   document.getElementById('level-btn').addEventListener('click', function() {
     document.getElementById('level-screen').style.display = 'none';
+    initLevel(level);
+    gameRunning = true;
+  });
+
+  document.getElementById('gameover-btn').addEventListener('click', function() {
+    document.getElementById('gameover-screen').style.display = 'none';
+    // Restart current level with same score
     initLevel(level);
     gameRunning = true;
   });
