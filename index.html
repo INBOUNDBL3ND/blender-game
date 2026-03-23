@@ -123,6 +123,21 @@
     transition: transform 0.15s, box-shadow 0.15s;
   }
   .btn:active { transform: scale(0.96); box-shadow: 0 3px 15px rgba(232,93,38,0.4); }
+  #start-content .btn {
+    animation: btnPulseGlow 2s ease-in-out infinite;
+  }
+  @keyframes btnPulseGlow {
+    0%, 100% { box-shadow: 0 6px 30px rgba(232,93,38,0.5), 0 0 0 1px rgba(255,255,255,0.05), 0 0 0 0 rgba(232,93,38,0); }
+    50% { box-shadow: 0 6px 30px rgba(232,93,38,0.5), 0 0 0 1px rgba(255,255,255,0.05), 0 0 40px 8px rgba(232,93,38,0.35); }
+  }
+  .how-to-play {
+    margin-top: 14px; font-size: 13px; color: rgba(255,255,255,0.3);
+    letter-spacing: 1px; font-weight: 400;
+  }
+  .how-to-play span { color: rgba(255,255,255,0.45); }
+  #start-particles-canvas {
+    position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  }
   .start-footer {
     margin-top: 20px; font-size: 11px; color: rgba(255,255,255,0.2);
     letter-spacing: 1px; text-transform: uppercase;
@@ -194,6 +209,7 @@
 <div id="start-screen">
   <div id="start-bg"></div>
   <canvas id="start-city-canvas" style="position:absolute;bottom:0;left:0;right:0;height:55%;width:100%;"></canvas>
+  <canvas id="start-particles-canvas"></canvas>
   <div id="start-overlay"></div>
   <div id="start-content">
     <div class="logo-wrap">
@@ -214,6 +230,7 @@
     <div class="rating-stars"><span>&#9733;&#9733;&#9733;&#9733;&#9733;</span></div>
     <div class="rating-text">4.9 &bull; 127K Ratings</div>
     <button class="btn" id="start-btn">PLAY</button>
+    <div class="how-to-play"><span>Drag</span> to move &bull; <span>Eat buildings</span> to grow</div>
     <div class="start-footer">Free to Play</div>
   </div>
 </div>
@@ -252,7 +269,7 @@
   <div class="ui-box"><small>LEVEL</small><span id="level-label">1</span></div>
 </div>
 <div id="timer-wrap">
-  <div id="timer-box"><small>TIME</small><span id="timer-val">1:30</span></div>
+  <div id="timer-box"><small>TIME</small><span id="timer-val">2:00</span></div>
 </div>
 <div id="size-indicator">
   <div id="size-label">BLENDER SIZE</div>
@@ -283,8 +300,8 @@
   var playerVX = 0, playerVY = 0; // Velocity for smooth acceleration
 
   // Timer variables
-  var timerTotal = 90; // seconds for level 1
-  var timerLeft = 90;
+  var timerTotal = 120; // seconds for level 1
+  var timerLeft = 120;
   var timerLastTick = 0;
   var gameTime = 0; // for animations (water, etc)
 
@@ -471,13 +488,29 @@
       }
     }
 
+    // HP system: small buildings (class 0-1) have 1 HP, medium 2, large 3, huge 4, mega 5
+    var maxHP = sizeClass <= 1 ? 1 : (sizeClass === 2 ? 2 : (sizeClass === 3 ? 3 : (sizeClass === 4 ? 4 : 5)));
+
+    // Generate random crack patterns for damage visualization
+    var crackPatterns = [];
+    for (var ci = 0; ci < 8; ci++) {
+      crackPatterns.push({
+        x: Math.random() * bw, y: -Math.random() * bh,
+        dx: (Math.random() - 0.5) * 12, dy: (Math.random() - 0.5) * 12,
+        dx2: (Math.random() - 0.5) * 8, dy2: (Math.random() - 0.5) * 8
+      });
+    }
+
     return {
-      x: x, y: y, w: bw, h: bh, type: type, pal: pal,
+      x: x, y: y, w: bw, h: bh, origH: bh, type: type, pal: pal,
       floors: floors, floorH: floorH, winsPerFloor: winsPerFloor,
       windowLit: windowLit,
       roofType: roofType, doorW: doorW, doorH: doorH,
       hasAwning: hasAwning, awningColor: awningColor, acUnits: acUnits,
       sizeClass: sizeClass,
+      hp: maxHP, maxHP: maxHP,
+      crackPatterns: crackPatterns,
+      chipCooldown: 0, // prevent multiple chips per frame
       falling: false, fallProgress: 0, fallDir: 0,
       absorbed: false,
       shake: 0, shakeAmount: 0
@@ -498,8 +531,8 @@
     eaten = 0;
     maxBuildingW = 0;
 
-    // Timer: level 1 = 90s, each level adds 15s
-    timerTotal = 90 + (lvl - 1) * 15;
+    // Timer: level 1 = 120s, each level adds 20s
+    timerTotal = 120 + (lvl - 1) * 20;
     timerLeft = timerTotal;
     timerLastTick = Date.now();
     gameTime = 0;
@@ -935,6 +968,9 @@
       var b = buildings[i];
       if (b.absorbed) continue;
 
+      // Decrease chip cooldown
+      if (b.chipCooldown > 0) b.chipCooldown--;
+
       var canEat = player.r * 2 > b.w * 0.9;
       var cx = b.x + b.w / 2;
       var cy = b.y + b.w / 2;
@@ -945,9 +981,38 @@
 
       if (!b.falling && dist < touchDist) {
         if (canEat) {
-          b.falling = true;
-          b.fallDir = Math.atan2(dy, dx);
-          spawnDebris(b.x, b.y, b.w, b.pal, 10 + b.sizeClass * 4);
+          if (b.chipCooldown <= 0) {
+            // Chip away one HP
+            b.hp--;
+            b.chipCooldown = 20; // prevent instant multi-hit (about 0.33s at 60fps)
+            b.shake = 12;
+            b.shakeAmount = 4;
+
+            // Spawn chip debris
+            spawnDebris(b.x, b.y, b.w, b.pal, 4 + b.sizeClass * 2);
+
+            // Partial score for each chip
+            var chipScore = Math.floor((b.origH * b.w / 8) * (b.sizeClass + 1) / b.maxHP);
+            score += chipScore;
+            document.getElementById('score').textContent = score;
+
+            // Grow a tiny bit with each chip
+            var chipGrowth = (b.w * 0.009 + b.sizeClass * 0.1) / b.maxHP;
+            player.r += chipGrowth;
+            updateSizeBar();
+
+            // Visual damage: shrink building height with each hit
+            var damageRatio = b.hp / b.maxHP;
+            b.h = b.origH * (0.3 + 0.7 * damageRatio); // shrink down to 30% of original height
+            b.floorH = b.h / b.floors;
+
+            if (b.hp <= 0) {
+              // Final destruction - start falling animation
+              b.falling = true;
+              b.fallDir = Math.atan2(dy, dx);
+              spawnDebris(b.x, b.y, b.w, b.pal, 10 + b.sizeClass * 4);
+            }
+          }
         } else {
           // Bump - too small
           b.shake = 10;
@@ -964,10 +1029,6 @@
         if (b.fallProgress >= 1) {
           b.absorbed = true;
           eaten++;
-          score += Math.floor(b.h * b.w / 8) * (b.sizeClass + 1);
-          // Halved growth
-          player.r += b.w * 0.009 + b.sizeClass * 0.1;
-          document.getElementById('score').textContent = score;
           updateSizeBar();
           spawnDebris(b.x, b.y, b.w, b.pal, 6);
         }
@@ -1644,7 +1705,88 @@
     ctx.fillStyle = 'rgba(0,0,0,0.1)';
     ctx.fillRect(-2 * zoom, 0, bw + 4 * zoom, 2 * zoom);
 
+    // Damage visuals: cracks and missing chunks when HP < maxHP
+    if (b.hp < b.maxHP && !b.falling) {
+      var dmgLevel = 1 - (b.hp / b.maxHP); // 0 = no damage, 1 = fully damaged
+
+      // Draw cracks - more cracks appear as damage increases
+      var numCracks = Math.ceil(b.crackPatterns.length * dmgLevel);
+      ctx.strokeStyle = 'rgba(30,20,10,' + (0.3 + dmgLevel * 0.4) + ')';
+      ctx.lineWidth = (1 + dmgLevel) * zoom;
+      for (var ci = 0; ci < numCracks; ci++) {
+        var crack = b.crackPatterns[ci];
+        var crX = crack.x * zoom * (bw / (b.w)); // scale to current zoom
+        var crY = crack.y * zoom * (bh / (b.origH * zoom / zoom));
+        // Recalculate crack y based on current bh
+        crY = -(Math.random() * 0.8 + 0.1) * bh; // use the ci as seed-ish
+        crY = -((ci + 1) / (numCracks + 1)) * bh;
+        crX = crack.x / b.w * bw;
+        ctx.beginPath();
+        ctx.moveTo(crX, crY);
+        ctx.lineTo(crX + crack.dx * zoom, crY + crack.dy * zoom);
+        ctx.lineTo(crX + crack.dx * zoom + crack.dx2 * zoom, crY + crack.dy * zoom + crack.dy2 * zoom);
+        ctx.stroke();
+      }
+
+      // Dark damage overlay that increases with damage
+      ctx.fillStyle = 'rgba(40,20,10,' + (dmgLevel * 0.25) + ')';
+      ctx.fillRect(0, -bh, bw, bh);
+
+      // Missing chunk effects - dark patches
+      var numChunks = Math.floor(dmgLevel * 5);
+      for (var ch = 0; ch < numChunks; ch++) {
+        var chunkSeed = b.crackPatterns[ch % b.crackPatterns.length];
+        var chX = (chunkSeed.x / b.w) * bw;
+        var chY = -((ch + 0.5) / (numChunks + 1)) * bh;
+        var chS = (4 + ch * 2) * zoom * dmgLevel;
+        ctx.fillStyle = 'rgba(20,15,10,' + (0.3 + dmgLevel * 0.3) + ')';
+        ctx.beginPath();
+        ctx.moveTo(chX, chY);
+        ctx.lineTo(chX + chS, chY - chS * 0.5);
+        ctx.lineTo(chX + chS * 0.7, chY + chS * 0.8);
+        ctx.lineTo(chX - chS * 0.3, chY + chS * 0.5);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Rubble/debris at base of building
+      ctx.fillStyle = 'rgba(120,100,80,' + (dmgLevel * 0.6) + ')';
+      for (var rb = 0; rb < Math.floor(dmgLevel * 6); rb++) {
+        var rbX = (b.crackPatterns[rb % b.crackPatterns.length].x / b.w) * bw;
+        var rbS = (2 + rb) * zoom;
+        ctx.fillRect(rbX - rbS / 2, -rbS, rbS, rbS);
+      }
+    }
+
     ctx.restore();
+
+    // HP bar above damaged buildings (drawn outside the transform)
+    if (b.hp < b.maxHP && b.hp > 0 && !b.falling) {
+      var hpBarW = bw * 0.8;
+      var hpBarH = 4 * zoom;
+      var hpBarX = sx + shakeX + (bw - hpBarW) / 2;
+      var hpBarY = sy - bh - 14 * zoom;
+
+      // Background
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.beginPath();
+      ctx.roundRect(hpBarX - 1 * zoom, hpBarY - 1 * zoom, hpBarW + 2 * zoom, hpBarH + 2 * zoom, 2 * zoom);
+      ctx.fill();
+
+      // Red background
+      ctx.fillStyle = 'rgba(180,30,30,0.7)';
+      ctx.beginPath();
+      ctx.roundRect(hpBarX, hpBarY, hpBarW, hpBarH, 1.5 * zoom);
+      ctx.fill();
+
+      // Green fill
+      var hpRatio = b.hp / b.maxHP;
+      var hpColor = hpRatio > 0.5 ? 'rgba(50,200,50,0.9)' : (hpRatio > 0.25 ? 'rgba(220,180,30,0.9)' : 'rgba(220,50,30,0.9)');
+      ctx.fillStyle = hpColor;
+      ctx.beginPath();
+      ctx.roundRect(hpBarX, hpBarY, hpBarW * hpRatio, hpBarH, 1.5 * zoom);
+      ctx.fill();
+    }
   }
 
   function drawBlender() {
@@ -2050,7 +2192,18 @@
     document.getElementById('level-screen').style.display = 'flex';
   }
 
-  // Animated start screen skyline
+  // Parallax mouse/tilt tracking for start screen
+  var parallaxX = 0, parallaxY = 0;
+  window.addEventListener('mousemove', function(e) {
+    parallaxX = (e.clientX / window.innerWidth - 0.5) * 2; // -1 to 1
+    parallaxY = (e.clientY / window.innerHeight - 0.5) * 2;
+  });
+  window.addEventListener('deviceorientation', function(e) {
+    if (e.gamma !== null) parallaxX = Math.max(-1, Math.min(1, e.gamma / 30));
+    if (e.beta !== null) parallaxY = Math.max(-1, Math.min(1, (e.beta - 45) / 30));
+  });
+
+  // Animated start screen skyline with parallax
   (function() {
     var sc = document.getElementById('start-city-canvas');
     var sctx = sc.getContext('2d');
@@ -2070,7 +2223,10 @@
             wins.push({ f: f, w: w, lit: Math.random() > 0.4 });
           }
         }
-        skyBuildings.push({ x: x, w: bw, h: bh, wins: wins, wpc: wpc, floors: floors,
+        // depth: taller buildings are "closer" and parallax more
+        var depth = bh / (sc.height * 0.6); // 0 to ~1, taller = closer
+        skyBuildings.push({ x: x, origX: x, w: bw, h: bh, wins: wins, wpc: wpc, floors: floors,
+          depth: depth,
           color: 'hsl(' + (210 + Math.random() * 30) + ',' + (10 + Math.random() * 15) + '%,' + (8 + Math.random() * 12) + '%)',
           lightColor: 'hsl(' + (40 + Math.random() * 20) + ',80%,' + (60 + Math.random() * 20) + '%)'
         });
@@ -2084,15 +2240,18 @@
       skyAngle += 0.01;
       for (var i = 0; i < skyBuildings.length; i++) {
         var b = skyBuildings[i];
+        // Parallax offset: closer (taller) buildings shift more
+        var pShift = parallaxX * b.depth * 12;
+        var drawX = b.origX + pShift;
         var by = sc.height - b.h;
         sctx.fillStyle = b.color;
-        sctx.fillRect(b.x, by, b.w, b.h);
+        sctx.fillRect(drawX, by, b.w, b.h);
         var ww = 3, wh = 3;
         var gap = (b.w - 4) / b.wpc;
         for (var j = 0; j < b.wins.length; j++) {
           var win = b.wins[j];
           if (!win.lit) continue;
-          var wx = b.x + 3 + win.w * gap;
+          var wx = drawX + 3 + win.w * gap;
           var wy = by + 4 + win.f * 12;
           sctx.fillStyle = b.lightColor;
           sctx.globalAlpha = 0.5 + Math.sin(skyAngle + j * 0.5) * 0.2;
@@ -2104,6 +2263,57 @@
     }
     drawSky();
     window.addEventListener('resize', resizeSky);
+  })();
+
+  // Floating dust motes / particles on start screen
+  (function() {
+    var pc = document.getElementById('start-particles-canvas');
+    var pctx = pc.getContext('2d');
+    var dustMotes = [];
+    var NUM_MOTES = 50;
+
+    function resizeParticles() {
+      pc.width = window.innerWidth;
+      pc.height = window.innerHeight;
+    }
+    resizeParticles();
+    window.addEventListener('resize', resizeParticles);
+
+    // Init motes
+    for (var i = 0; i < NUM_MOTES; i++) {
+      dustMotes.push({
+        x: Math.random() * window.innerWidth,
+        y: Math.random() * window.innerHeight,
+        r: 1 + Math.random() * 2.5,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: -0.1 - Math.random() * 0.3,
+        alpha: 0.1 + Math.random() * 0.3,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+
+    function drawDust() {
+      if (!document.getElementById('start-screen').offsetParent && document.getElementById('start-screen').style.display === 'none') return;
+      pctx.clearRect(0, 0, pc.width, pc.height);
+      var t = Date.now() * 0.001;
+      for (var i = 0; i < dustMotes.length; i++) {
+        var m = dustMotes[i];
+        m.x += m.vx + Math.sin(t * 0.5 + m.phase) * 0.15;
+        m.y += m.vy;
+        // Wrap around
+        if (m.y < -10) { m.y = pc.height + 10; m.x = Math.random() * pc.width; }
+        if (m.x < -10) m.x = pc.width + 10;
+        if (m.x > pc.width + 10) m.x = -10;
+
+        var flickerAlpha = m.alpha * (0.7 + Math.sin(t * 1.5 + m.phase) * 0.3);
+        pctx.beginPath();
+        pctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+        pctx.fillStyle = 'rgba(255,220,180,' + flickerAlpha + ')';
+        pctx.fill();
+      }
+      requestAnimationFrame(drawDust);
+    }
+    drawDust();
   })();
 
   // Rotate logo blades on start screen
