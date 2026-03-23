@@ -197,6 +197,10 @@
     text-shadow: 0 2px 8px rgba(0,0,0,0.5);
     background: rgba(0,0,0,0.4); padding: 8px 18px; border-radius: 8px;
   }
+  .version-tag {
+    margin-top: 4px; font-size: 9px; color: rgba(255,255,255,0.12);
+    letter-spacing: 2px; text-transform: uppercase;
+  }
 </style>
 </head>
 <body>
@@ -214,6 +218,7 @@
     <div class="tap-text">TAP ANYWHERE TO START</div>
     <div class="how-to-play"><span>Drag</span> to move &bull; <span>Eat buildings</span> to grow</div>
     <div class="start-footer">Free to Play</div>
+    <div class="version-tag">v2.0 &mdash; Highway Update</div>
   </div>
 </div>
 
@@ -289,6 +294,12 @@
   var rivers = [];
   var parks = [];
   var grassPatches = [];
+
+  // Road system
+  var roadSegments = []; // {x1,y1,x2,y2,type:'city'|'highway'|'dirt',width}
+  var bridges = [];      // {x,y,w,h,type:'concrete'|'wood'|'steel',horizontal}
+  var manholes = [];     // {x,y}
+  var roadGrid = {};     // col,row -> blockW, blockH for varied blocks
 
   // World detail objects
   var fireHydrants = [];
@@ -382,7 +393,18 @@
     return false;
   }
 
+  // Check if point is on a bridge
+  function pointOnBridge(px, py) {
+    for (var bi = 0; bi < bridges.length; bi++) {
+      var br = bridges[bi];
+      if (px >= br.x - 2 && px <= br.x + br.w + 2 && py >= br.y - 2 && py <= br.y + br.h + 2) return true;
+    }
+    return false;
+  }
+
   function pointInWater(px, py) {
+    // If on a bridge, not blocked by water
+    if (pointOnBridge(px, py)) return false;
     return pointInLake(px, py) || pointInRiver(px, py);
   }
 
@@ -392,6 +414,27 @@
       if (px >= park.x && px <= park.x + park.w && py >= park.y && py <= park.y + park.h) return true;
     }
     return false;
+  }
+
+  // Check if a point is near any road centerline
+  function pointOnRoad(px, py, margin) {
+    margin = margin || 0;
+    for (var ri = 0; ri < roadSegments.length; ri++) {
+      var seg = roadSegments[ri];
+      var hw = seg.width / 2 + margin;
+      if (seg.x1 === seg.x2) {
+        // Vertical segment
+        var minY = Math.min(seg.y1, seg.y2);
+        var maxY = Math.max(seg.y1, seg.y2);
+        if (py >= minY && py <= maxY && Math.abs(px - seg.x1) < hw) return seg;
+      } else {
+        // Horizontal segment
+        var minX = Math.min(seg.x1, seg.x2);
+        var maxX = Math.max(seg.x1, seg.x2);
+        if (px >= minX && px <= maxX && Math.abs(py - seg.y1) < hw) return seg;
+      }
+    }
+    return null;
   }
 
   function makeBuilding(x, y, sizeClass) {
@@ -485,6 +528,186 @@
     };
   }
 
+  // ==========================================
+  // ROAD GENERATION - varied road types
+  // ==========================================
+  function generateRoadGrid(cols, rows, baseBlockSize, roadW) {
+    roadSegments = [];
+    bridges = [];
+    manholes = [];
+    roadGrid = {};
+
+    // Pick 2-3 highway rows and cols
+    var hwCols = [];
+    var hwRows = [];
+    var hwCount = 2 + Math.floor(Math.random() * 2);
+    for (var i = 0; i < hwCount; i++) {
+      hwCols.push(Math.floor(1 + Math.random() * (cols - 2)));
+      hwRows.push(Math.floor(1 + Math.random() * (rows - 2)));
+    }
+
+    // Generate varied block sizes
+    var colWidths = [];
+    var rowHeights = [];
+    for (var c = 0; c < cols; c++) {
+      colWidths.push(baseBlockSize + Math.floor((Math.random() - 0.5) * 60));
+    }
+    for (var r = 0; r < rows; r++) {
+      rowHeights.push(baseBlockSize + Math.floor((Math.random() - 0.5) * 60));
+    }
+
+    // Compute cumulative positions for road edges
+    var colX = [0]; // x position of each vertical road
+    for (var c = 0; c < cols; c++) {
+      var rw = isHighwayCol(c, hwCols) ? 60 : (isEdgeCol(c, cols) ? 20 : roadW);
+      colX.push(colX[c] + rw + colWidths[c]);
+    }
+    // Final edge
+    var finalRW = isEdgeCol(cols, cols) ? 20 : roadW;
+    colX.push(colX[cols] + finalRW);
+
+    var rowY = [0];
+    for (var r = 0; r < rows; r++) {
+      var rh = isHighwayRow(r, hwRows) ? 60 : (isEdgeRow(r, rows) ? 20 : roadW);
+      rowY.push(rowY[r] + rh + rowHeights[r]);
+    }
+    var finalRH = isEdgeRow(rows, rows) ? 20 : roadW;
+    rowY.push(rowY[rows] + finalRH);
+
+    function isHighwayCol(c, hwc) {
+      for (var i = 0; i < hwc.length; i++) if (hwc[i] === c) return true;
+      return false;
+    }
+    function isHighwayRow(r, hwr) {
+      for (var i = 0; i < hwr.length; i++) if (hwr[i] === r) return true;
+      return false;
+    }
+    function isEdgeCol(c, maxC) { return c === 0 || c === maxC; }
+    function isEdgeRow(r, maxR) { return r === 0 || r === maxR; }
+
+    // Store grid info for building placement
+    for (var c = 0; c < cols; c++) {
+      for (var r = 0; r < rows; r++) {
+        var rw_left = isHighwayCol(c, hwCols) ? 60 : (isEdgeCol(c, cols) ? 20 : roadW);
+        var rw_top = isHighwayRow(r, hwRows) ? 60 : (isEdgeRow(r, rows) ? 20 : roadW);
+        roadGrid[c + ',' + r] = {
+          blockX: colX[c] + rw_left,
+          blockY: rowY[r] + rw_top,
+          blockW: colWidths[c],
+          blockH: rowHeights[r],
+          isNearEdge: c === 0 || c === cols - 1 || r === 0 || r === rows - 1,
+          isNearHighway: isHighwayCol(c, hwCols) || isHighwayCol(c + 1, hwCols) || isHighwayRow(r, hwRows) || isHighwayRow(r + 1, hwRows)
+        };
+      }
+    }
+
+    // Now build proper road segments
+    // Vertical roads
+    for (var c = 0; c <= cols; c++) {
+      var isHW = isHighwayCol(c, hwCols);
+      var isEdge = isEdgeCol(c, cols);
+      var rw = isHW ? 60 : (isEdge ? 20 : roadW);
+      var type = isHW ? 'highway' : (isEdge ? 'dirt' : 'city');
+      var rx = colX[c] + rw / 2;
+      roadSegments.push({
+        x1: rx, y1: 0, x2: rx, y2: worldH,
+        width: rw, type: type, vertical: true, index: c
+      });
+    }
+
+    // Horizontal roads
+    for (var r = 0; r <= rows; r++) {
+      var isHW = isHighwayRow(r, hwRows);
+      var isEdge = isEdgeRow(r, rows);
+      var rh = isHW ? 60 : (isEdge ? 20 : roadW);
+      var type = isHW ? 'highway' : (isEdge ? 'dirt' : 'city');
+      var ry = rowY[r] + rh / 2;
+      roadSegments.push({
+        x1: 0, y1: ry, x2: worldW, y2: ry,
+        width: rh, type: type, horizontal: true, index: r
+      });
+    }
+
+    // Detect bridge locations (road-water crossings)
+    generateBridges();
+
+    // Generate manholes on city streets
+    for (var si = 0; si < roadSegments.length; si++) {
+      var seg = roadSegments[si];
+      if (seg.type !== 'city') continue;
+      var segLen = seg.vertical ? worldH : worldW;
+      var numMH = Math.floor(segLen / 400);
+      for (var mi = 0; mi < numMH; mi++) {
+        if (Math.random() > 0.4) continue;
+        var pos = 100 + Math.random() * (segLen - 200);
+        var mx, my;
+        if (seg.vertical) {
+          mx = seg.x1 + (Math.random() - 0.5) * seg.width * 0.4;
+          my = pos;
+        } else {
+          mx = pos;
+          my = seg.y1 + (Math.random() - 0.5) * seg.width * 0.4;
+        }
+        manholes.push({ x: mx, y: my });
+      }
+    }
+
+    return { colX: colX, rowY: rowY, colWidths: colWidths, rowHeights: rowHeights, hwCols: hwCols, hwRows: hwRows, cols: cols, rows: rows };
+  }
+
+  function generateBridges() {
+    bridges = [];
+    for (var si = 0; si < roadSegments.length; si++) {
+      var seg = roadSegments[si];
+      // Sample along the road to find water crossings
+      var isVert = seg.vertical;
+      var start = isVert ? 0 : 0;
+      var end = isVert ? worldH : worldW;
+      var step = 10;
+      var inWater = false;
+      var waterStart = 0;
+
+      for (var pos = start; pos <= end; pos += step) {
+        var px = isVert ? seg.x1 : pos;
+        var py = isVert ? pos : seg.y1;
+        var onWater = pointInLake(px, py) || pointInRiver(px, py);
+
+        if (onWater && !inWater) {
+          waterStart = pos;
+          inWater = true;
+        } else if (!onWater && inWater) {
+          inWater = false;
+          var waterEnd = pos;
+          var bLen = waterEnd - waterStart + 20; // extend past edges
+          var bStart = waterStart - 10;
+
+          var bridgeType;
+          if (seg.type === 'highway') bridgeType = 'concrete';
+          else if (seg.type === 'dirt') bridgeType = 'wood';
+          else bridgeType = 'steel';
+
+          if (isVert) {
+            bridges.push({
+              x: seg.x1 - seg.width / 2 - 4, y: bStart,
+              w: seg.width + 8, h: bLen,
+              type: bridgeType, horizontal: false,
+              roadType: seg.type
+            });
+          } else {
+            bridges.push({
+              x: bStart, y: seg.y1 - seg.width / 2 - 4,
+              w: bLen, h: seg.width + 8,
+              type: bridgeType, horizontal: true,
+              roadType: seg.type
+            });
+          }
+        }
+      }
+    }
+  }
+
+  var gridInfo = null; // store for drawing
+
   function initLevel(lvl) {
     level = lvl;
     worldW = 2000 + lvl * 300;
@@ -508,10 +731,10 @@
     smoothCamX = player.x - W / 2;
     smoothCamY = player.y - H / 2;
 
-    var blockSize = 200;
+    var baseBlockSize = 200;
     var roadW = 40;
-    var cols = Math.floor(worldW / (blockSize + roadW));
-    var rows = Math.floor(worldH / (blockSize + roadW));
+    var cols = Math.floor(worldW / (baseBlockSize + roadW));
+    var rows = Math.floor(worldH / (baseBlockSize + roadW));
 
     // Generate grass color patches
     grassPatches = [];
@@ -526,7 +749,7 @@
       });
     }
 
-    // Generate lakes
+    // Generate lakes first (we need them before road generation to detect bridges)
     lakes = [];
     var numLakes = 3 + Math.floor(lvl * 0.5);
     for (var li = 0; li < numLakes; li++) {
@@ -561,23 +784,33 @@
       rivers.push({ points: rPath, width: 18 + Math.random() * 14, flowOffset: Math.random() * Math.PI * 2 });
     }
 
-    // Designate some blocks as parks
+    // Generate road grid (after water, so bridges are detected)
+    gridInfo = generateRoadGrid(cols, rows, baseBlockSize, roadW);
+
+    // Designate some blocks as parks - prefer blocks near edges or near lakes
     parks = [];
     var parkChance = 0.12;
     for (var col = 0; col < cols; col++) {
       for (var row = 0; row < rows; row++) {
-        if (Math.random() < parkChance) {
-          var parkX = roadW + col * (blockSize + roadW);
-          var parkY = roadW + row * (blockSize + roadW);
-          var pdcx = (parkX + blockSize / 2) - worldW / 2;
-          var pdcy = (parkY + blockSize / 2) - worldH / 2;
+        var gi = roadGrid[col + ',' + row];
+        if (!gi) continue;
+        var nearLake = false;
+        for (var li2 = 0; li2 < lakes.length; li2++) {
+          var ldx = (gi.blockX + gi.blockW / 2) - lakes[li2].cx;
+          var ldy = (gi.blockY + gi.blockH / 2) - lakes[li2].cy;
+          if (Math.sqrt(ldx * ldx + ldy * ldy) < lakes[li2].baseR + 200) nearLake = true;
+        }
+        var pc = nearLake ? 0.25 : (gi.isNearEdge ? 0.2 : parkChance);
+        if (Math.random() < pc) {
+          var pdcx = (gi.blockX + gi.blockW / 2) - worldW / 2;
+          var pdcy = (gi.blockY + gi.blockH / 2) - worldH / 2;
           if (Math.sqrt(pdcx * pdcx + pdcy * pdcy) < 200) continue;
           parks.push({
-            x: parkX, y: parkY, w: blockSize, h: blockSize,
+            x: gi.blockX, y: gi.blockY, w: gi.blockW, h: gi.blockH,
             col: col, row: row,
             hasPond: Math.random() > 0.5,
-            pondX: parkX + 40 + Math.random() * 120,
-            pondY: parkY + 40 + Math.random() * 120,
+            pondX: gi.blockX + 40 + Math.random() * (gi.blockW - 80),
+            pondY: gi.blockY + 40 + Math.random() * (gi.blockH - 80),
             pondR: 15 + Math.random() * 20,
             paths: []
           });
@@ -587,13 +820,13 @@
             var pathPoints = [];
             var horizontal = Math.random() > 0.5;
             if (horizontal) {
-              var py = parkY + 20 + Math.random() * (blockSize - 40);
-              for (var px = parkX; px <= parkX + blockSize; px += 20) {
+              var py = gi.blockY + 20 + Math.random() * (gi.blockH - 40);
+              for (var px = gi.blockX; px <= gi.blockX + gi.blockW; px += 20) {
                 pathPoints.push({ x: px, y: py + Math.sin(px * 0.03) * 15 });
               }
             } else {
-              var px2 = parkX + 20 + Math.random() * (blockSize - 40);
-              for (var py2 = parkY; py2 <= parkY + blockSize; py2 += 20) {
+              var px2 = gi.blockX + 20 + Math.random() * (gi.blockW - 40);
+              for (var py2 = gi.blockY; py2 <= gi.blockY + gi.blockH; py2 += 20) {
                 pathPoints.push({ x: px2 + Math.sin(py2 * 0.03) * 15, y: py2 });
               }
             }
@@ -624,16 +857,20 @@
 
     for (var col = 0; col < cols; col++) {
       for (var row = 0; row < rows; row++) {
-        var blockX = roadW + col * (blockSize + roadW);
-        var blockY = roadW + row * (blockSize + roadW);
+        var gi = roadGrid[col + ',' + row];
+        if (!gi) continue;
+        var blockX = gi.blockX;
+        var blockY = gi.blockY;
+        var blockW = gi.blockW;
+        var blockH = gi.blockH;
 
         // Skip park blocks for buildings
         if (parkSet[col + ',' + row]) {
           var parkTreeCount = 8 + Math.floor(Math.random() * 8);
           for (var pti = 0; pti < parkTreeCount; pti++) {
-            var tx = blockX + 10 + Math.random() * (blockSize - 20);
-            var ty = blockY + 10 + Math.random() * (blockSize - 20);
-            if (!pointInWater(tx, ty)) {
+            var tx = blockX + 10 + Math.random() * (blockW - 20);
+            var ty = blockY + 10 + Math.random() * (blockH - 20);
+            if (!pointInLake(tx, ty) && !pointInRiver(tx, ty)) {
               trees.push({
                 x: tx, y: ty,
                 r: 6 + Math.random() * 8,
@@ -645,7 +882,7 @@
           continue;
         }
 
-        // 1 building per block (easier difficulty)
+        // 1 building per block
         var numBuildings = 1;
         for (var b = 0; b < numBuildings; b++) {
           var r = Math.random();
@@ -656,9 +893,9 @@
             if (r < cumulative) { sizeClass = s; break; }
           }
 
-          var bx = blockX + 15 + Math.random() * (blockSize - 80);
-          var by = blockY + 15 + Math.random() * (blockSize - 80);
-          if (pointInWater(bx, by)) continue;
+          var bx = blockX + 15 + Math.random() * (blockW - 80);
+          var by = blockY + 15 + Math.random() * (blockH - 80);
+          if (pointInLake(bx, by) || pointInRiver(bx, by)) continue;
           var building = makeBuilding(bx, by, sizeClass);
           buildings.push(building);
           if (building.w > maxBuildingW) maxBuildingW = building.w;
@@ -676,9 +913,9 @@
 
         var numTrees = Math.floor(Math.random() * 3);
         for (var ti = 0; ti < numTrees; ti++) {
-          var ttx = blockX + 10 + Math.random() * (blockSize - 20);
-          var tty = blockY + 10 + Math.random() * (blockSize - 20);
-          if (!pointInWater(ttx, tty)) {
+          var ttx = blockX + 10 + Math.random() * (blockW - 20);
+          var tty = blockY + 10 + Math.random() * (blockH - 20);
+          if (!pointInLake(ttx, tty) && !pointInRiver(ttx, tty)) {
             trees.push({
               x: ttx, y: tty,
               r: 5 + Math.random() * 6,
@@ -691,140 +928,129 @@
     }
 
     // Spawn world detail objects along roads
-    for (var col = 0; col <= cols; col++) {
-      for (var row = 0; row <= rows; row++) {
-        var roadX = col * (blockSize + roadW);
-        var roadY = row * (blockSize + roadW);
+    for (var si = 0; si < roadSegments.length; si++) {
+      var seg = roadSegments[si];
+      if (seg.type === 'dirt') continue; // Dirt roads: no urban furniture
 
-        // Fire hydrants on sidewalks (vertical road sides)
-        if (row < rows && Math.random() > 0.5) {
-          var hydSide = Math.random() > 0.5 ? -8 : roadW + 4;
+      var segLen = seg.vertical ? worldH : worldW;
+      var spacing = 80 + Math.random() * 60;
+
+      for (var pos = 50; pos < segLen - 50; pos += spacing) {
+        var rx, ry;
+        if (seg.vertical) { rx = seg.x1; ry = pos; }
+        else { rx = pos; ry = seg.y1; }
+
+        // Fire hydrants on sidewalks
+        if (seg.type === 'city' && Math.random() > 0.7) {
+          var hydOff = (Math.random() > 0.5 ? -1 : 1) * (seg.width / 2 + 6);
           fireHydrants.push({
-            x: roadX + hydSide,
-            y: roadY + 30 + Math.random() * (blockSize - 60)
+            x: seg.vertical ? rx + hydOff : rx,
+            y: seg.vertical ? ry : ry + hydOff
           });
         }
 
-        // Street lights along vertical roads
-        if (row < rows) {
-          var numLights = 2 + Math.floor(Math.random() * 2);
-          for (var sl = 0; sl < numLights; sl++) {
-            var lightSide = sl % 2 === 0 ? -6 : roadW + 2;
-            streetLights.push({
-              x: roadX + lightSide,
-              y: roadY + 40 + sl * (blockSize / numLights)
-            });
-          }
+        // Street lights
+        if (Math.random() > 0.5) {
+          var lightOff = (Math.random() > 0.5 ? -1 : 1) * (seg.width / 2 + 4);
+          streetLights.push({
+            x: seg.vertical ? rx + lightOff : rx,
+            y: seg.vertical ? ry : ry + lightOff
+          });
         }
 
-        // Street lights along horizontal roads
-        if (col < cols) {
-          var numLightsH = 2 + Math.floor(Math.random() * 2);
-          for (var sl = 0; sl < numLightsH; sl++) {
-            var lightSideH = sl % 2 === 0 ? -6 : roadW + 2;
-            streetLights.push({
-              x: roadX + 40 + sl * (blockSize / numLightsH),
-              y: roadY + lightSideH
-            });
-          }
-        }
-
-        // Mailboxes on sidewalks
-        if (row < rows && Math.random() > 0.65) {
+        // Mailboxes
+        if (seg.type === 'city' && Math.random() > 0.85) {
+          var mbOff = (Math.random() > 0.5 ? -1 : 1) * (seg.width / 2 + 5);
           mailboxes.push({
-            x: roadX + (Math.random() > 0.5 ? -7 : roadW + 3),
-            y: roadY + 50 + Math.random() * (blockSize - 100)
+            x: seg.vertical ? rx + mbOff : rx,
+            y: seg.vertical ? ry : ry + mbOff
           });
         }
 
-        // Parked cars along road edges
-        if (row < rows && Math.random() > 0.3) {
-          var numParked = 1 + Math.floor(Math.random() * 3);
-          for (var pc = 0; pc < numParked; pc++) {
-            var parkSide = Math.random() > 0.5 ? 3 : roadW - 11;
-            parkedCars.push({
-              x: roadX + parkSide,
-              y: roadY + 20 + pc * 35 + Math.random() * 15,
-              color: PARKED_CAR_COLORS[Math.floor(Math.random() * PARKED_CAR_COLORS.length)],
-              horizontal: false,
-              len: 16 + Math.random() * 6,
-              w: 8
-            });
-          }
-        }
-        if (col < cols && Math.random() > 0.3) {
-          var numParkedH = 1 + Math.floor(Math.random() * 3);
-          for (var pc = 0; pc < numParkedH; pc++) {
-            var parkSideH = Math.random() > 0.5 ? 3 : roadW - 11;
-            parkedCars.push({
-              x: roadX + 20 + pc * 35 + Math.random() * 15,
-              y: roadY + parkSideH,
-              color: PARKED_CAR_COLORS[Math.floor(Math.random() * PARKED_CAR_COLORS.length)],
-              horizontal: true,
-              len: 16 + Math.random() * 6,
-              w: 8
-            });
-          }
+        // Parked cars along city roads
+        if (seg.type === 'city' && Math.random() > 0.5) {
+          var pcOff = (Math.random() > 0.5 ? 1 : -1) * (seg.width / 2 - 6);
+          parkedCars.push({
+            x: seg.vertical ? rx + pcOff : rx,
+            y: seg.vertical ? ry : ry + pcOff,
+            color: PARKED_CAR_COLORS[Math.floor(Math.random() * PARKED_CAR_COLORS.length)],
+            horizontal: !seg.vertical,
+            len: 16 + Math.random() * 6,
+            w: 8
+          });
         }
 
         // Bus stops on some sidewalks
-        if (row < rows && Math.random() > 0.85) {
+        if (seg.type === 'city' && Math.random() > 0.92) {
+          var bsOff = (Math.random() > 0.5 ? -1 : 1) * (seg.width / 2 + 8);
           busStops.push({
-            x: roadX + (Math.random() > 0.5 ? -14 : roadW + 2),
-            y: roadY + 60 + Math.random() * (blockSize - 120),
+            x: seg.vertical ? rx + bsOff : rx,
+            y: seg.vertical ? ry : ry + bsOff,
             w: 12, h: 16
           });
         }
       }
     }
 
-    // Spawn moving cars on roads
+    // Spawn moving cars on roads (including highways)
     cars = [];
     var numCars = 20 + lvl * 8;
     for (var ci = 0; ci < numCars; ci++) {
-      var horizontal = Math.random() > 0.5;
-      var lane = Math.random() > 0.5 ? 0.3 : 0.7;
-      var roadIdx, rx, ry, carDir;
-      if (horizontal) {
-        roadIdx = Math.floor(Math.random() * (Math.floor(worldH / (blockSize + roadW)) + 1));
-        ry = roadIdx * (blockSize + roadW) + roadW * lane;
-        rx = Math.random() * worldW;
-        carDir = lane > 0.5 ? 1 : -1;
-      } else {
-        roadIdx = Math.floor(Math.random() * (Math.floor(worldW / (blockSize + roadW)) + 1));
-        rx = roadIdx * (blockSize + roadW) + roadW * lane;
-        ry = Math.random() * worldH;
-        carDir = lane > 0.5 ? 1 : -1;
+      // Pick a random road segment
+      var segIdx = Math.floor(Math.random() * roadSegments.length);
+      var seg = roadSegments[segIdx];
+      // Prefer highways for some cars
+      if (Math.random() > 0.6) {
+        for (var si2 = 0; si2 < roadSegments.length; si2++) {
+          if (roadSegments[si2].type === 'highway') { seg = roadSegments[si2]; break; }
+        }
       }
+      var isVert = seg.vertical;
+      var laneOffset = (Math.random() > 0.5 ? -1 : 1) * seg.width * 0.25;
+      var carDir = laneOffset > 0 ? 1 : -1;
+      var rx, ry;
+      if (isVert) {
+        rx = seg.x1 + laneOffset;
+        ry = Math.random() * worldH;
+      } else {
+        rx = Math.random() * worldW;
+        ry = seg.y1 + laneOffset;
+      }
+      var sp = seg.type === 'highway' ? (1.0 + Math.random() * 1.5) : (seg.type === 'dirt' ? (0.3 + Math.random() * 0.5) : (0.5 + Math.random() * 1.2));
       cars.push({
-        x: rx, y: ry, horizontal: horizontal, dir: carDir,
-        speed: 0.5 + Math.random() * 1.2,
+        x: rx, y: ry, horizontal: !isVert, dir: carDir,
+        speed: sp,
         color: CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)],
-        len: 14 + Math.random() * 8,
-        w: 8 + Math.random() * 3
+        len: seg.type === 'highway' ? (16 + Math.random() * 10) : (14 + Math.random() * 8),
+        w: seg.type === 'highway' ? (9 + Math.random() * 3) : (8 + Math.random() * 3),
+        roadType: seg.type
       });
     }
 
-    // Spawn people on sidewalks
+    // Spawn people on sidewalks (city roads only)
     people = [];
     var numPeople = 30 + lvl * 10;
     for (var pi = 0; pi < numPeople; pi++) {
-      var pHoriz = Math.random() > 0.5;
-      var pRoadIdx, px, py, pDir, pSide;
-      pSide = Math.random() > 0.5 ? -1 : 1;
-      if (pHoriz) {
-        pRoadIdx = Math.floor(Math.random() * (Math.floor(worldH / (blockSize + roadW)) + 1));
-        py = pRoadIdx * (blockSize + roadW) + (pSide > 0 ? roadW + 3 : -3);
-        px = Math.random() * worldW;
-        pDir = Math.random() > 0.5 ? 1 : -1;
-      } else {
-        pRoadIdx = Math.floor(Math.random() * (Math.floor(worldW / (blockSize + roadW)) + 1));
-        px = pRoadIdx * (blockSize + roadW) + (pSide > 0 ? roadW + 3 : -3);
-        py = Math.random() * worldH;
-        pDir = Math.random() > 0.5 ? 1 : -1;
+      // Find a city road segment
+      var citySegs = [];
+      for (var csi = 0; csi < roadSegments.length; csi++) {
+        if (roadSegments[csi].type === 'city') citySegs.push(roadSegments[csi]);
       }
+      if (citySegs.length === 0) break;
+      var seg = citySegs[Math.floor(Math.random() * citySegs.length)];
+      var isVert = seg.vertical;
+      var pSide = (Math.random() > 0.5 ? -1 : 1) * (seg.width / 2 + 3);
+      var px, py, pDir;
+      if (isVert) {
+        px = seg.x1 + pSide;
+        py = Math.random() * worldH;
+      } else {
+        px = Math.random() * worldW;
+        py = seg.y1 + pSide;
+      }
+      pDir = Math.random() > 0.5 ? 1 : -1;
       people.push({
-        x: px, y: py, horizontal: pHoriz, dir: pDir,
+        x: px, y: py, horizontal: !isVert, dir: pDir,
         speed: 0.2 + Math.random() * 0.4,
         skin: SKIN_COLORS[Math.floor(Math.random() * SKIN_COLORS.length)],
         shirt: SHIRT_COLORS[Math.floor(Math.random() * SHIRT_COLORS.length)],
@@ -993,7 +1219,7 @@
     camX = smoothCamX;
     camY = smoothCamY;
 
-    // Eat trees (growth multiplied by 1.5: 0.025 * 1.5 = 0.0375)
+    // Eat trees
     for (var i = trees.length - 1; i >= 0; i--) {
       var tr = trees[i];
       if (tr.absorbed) continue;
@@ -1037,7 +1263,6 @@
             score += chipScore;
             document.getElementById('score').textContent = score;
 
-            // Grow per chip (multiplied by 1.5)
             var chipGrowth = ((b.w * 0.009 + b.sizeClass * 0.1) / b.maxHP) * 1.5;
             player.r += chipGrowth;
             updateSizeBar();
@@ -1115,7 +1340,6 @@
 
     if (eaten >= totalBuildings) {
       gameRunning = false;
-      // FIX: increment level THEN show level screen with new level value
       level++;
       setTimeout(function() { showLevelScreen(level); }, 600);
     }
@@ -1337,6 +1561,522 @@
     }
   }
 
+  // ==========================================
+  // DRAW ROADS - varied types
+  // ==========================================
+  function drawRoads() {
+    var zoom = getZoom();
+
+    for (var si = 0; si < roadSegments.length; si++) {
+      var seg = roadSegments[si];
+      var isVert = seg.vertical;
+      var hw = seg.width / 2;
+
+      // Calculate screen coords for road
+      var sx1, sy1, sx2, sy2;
+      if (isVert) {
+        sx1 = (seg.x1 - hw - camX) * zoom;
+        sy1 = (0 - camY) * zoom;
+        sx2 = seg.width * zoom;
+        sy2 = worldH * zoom;
+      } else {
+        sx1 = (0 - camX) * zoom;
+        sy1 = (seg.y1 - hw - camY) * zoom;
+        sx2 = worldW * zoom;
+        sy2 = seg.width * zoom;
+      }
+
+      // Skip if off screen
+      if (isVert && (sx1 + sx2 < -10 || sx1 > W + 10)) continue;
+      if (!isVert && (sy1 + sy2 < -10 || sy1 > H + 10)) continue;
+
+      if (seg.type === 'highway') {
+        // Dark smooth asphalt
+        ctx.fillStyle = '#3a3a3a';
+        ctx.fillRect(sx1, sy1, sx2, sy2);
+
+        // Subtle noise texture
+        ctx.fillStyle = 'rgba(50,50,50,0.15)';
+        var seed = seg.index * 1000;
+        for (var n = 0; n < 20; n++) {
+          var nx = sx1 + seededRandom(seed + n) * sx2;
+          var ny = sy1 + seededRandom(seed + n + 100) * sy2;
+          ctx.fillRect(nx, ny, 3 * zoom, 2 * zoom);
+        }
+
+        // Center median (grass or concrete strip)
+        var medW = 4 * zoom;
+        if (isVert) {
+          var medX = (seg.x1 - camX) * zoom - medW / 2;
+          // Concrete median
+          ctx.fillStyle = '#7a7a6a';
+          ctx.fillRect(medX, sy1, medW, sy2);
+          // Yellow edge lines on median
+          ctx.fillStyle = '#ddcc00';
+          ctx.fillRect(medX - 1 * zoom, sy1, 1.5 * zoom, sy2);
+          ctx.fillRect(medX + medW, sy1, 1.5 * zoom, sy2);
+        } else {
+          var medY = (seg.y1 - camY) * zoom - medW / 2;
+          ctx.fillStyle = '#7a7a6a';
+          ctx.fillRect(sx1, medY, sx2, medW);
+          ctx.fillStyle = '#ddcc00';
+          ctx.fillRect(sx1, medY - 1 * zoom, sx2, 1.5 * zoom);
+          ctx.fillRect(sx1, medY + medW, sx2, 1.5 * zoom);
+        }
+
+        // White dashed lane markings (2 per side)
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = 1.2 * zoom;
+        ctx.setLineDash([10 * zoom, 8 * zoom]);
+        for (var lane = -1; lane <= 1; lane += 2) {
+          var offset = lane * seg.width * 0.25;
+          if (isVert) {
+            ctx.beginPath();
+            ctx.moveTo((seg.x1 + offset - camX) * zoom, sy1);
+            ctx.lineTo((seg.x1 + offset - camX) * zoom, sy1 + sy2);
+            ctx.stroke();
+          } else {
+            ctx.beginPath();
+            ctx.moveTo(sx1, (seg.y1 + offset - camY) * zoom);
+            ctx.lineTo(sx1 + sx2, (seg.y1 + offset - camY) * zoom);
+            ctx.stroke();
+          }
+        }
+        ctx.setLineDash([]);
+
+        // White edge lines (solid)
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 1.5 * zoom;
+        if (isVert) {
+          ctx.beginPath();
+          ctx.moveTo(sx1 + 2 * zoom, sy1); ctx.lineTo(sx1 + 2 * zoom, sy1 + sy2); ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(sx1 + sx2 - 2 * zoom, sy1); ctx.lineTo(sx1 + sx2 - 2 * zoom, sy1 + sy2); ctx.stroke();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(sx1, sy1 + 2 * zoom); ctx.lineTo(sx1 + sx2, sy1 + 2 * zoom); ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(sx1, sy1 + sy2 - 2 * zoom); ctx.lineTo(sx1 + sx2, sy1 + sy2 - 2 * zoom); ctx.stroke();
+        }
+
+      } else if (seg.type === 'dirt') {
+        // Brown/tan dirt road
+        ctx.fillStyle = '#9a8560';
+        ctx.fillRect(sx1, sy1, sx2, sy2);
+
+        // Rough edge: draw jagged edges
+        ctx.fillStyle = '#7a6a48';
+        var edgeSize = 3 * zoom;
+        if (isVert) {
+          for (var ey = sy1; ey < sy1 + sy2; ey += 8 * zoom) {
+            var jag = (Math.sin(ey * 0.3) * 2 + seededRandom(ey * 7 + seg.index) * 3) * zoom;
+            ctx.fillRect(sx1 - jag, ey, edgeSize + jag, 6 * zoom);
+            ctx.fillRect(sx1 + sx2 - edgeSize, ey, edgeSize + jag, 6 * zoom);
+          }
+        } else {
+          for (var ex = sx1; ex < sx1 + sx2; ex += 8 * zoom) {
+            var jag = (Math.sin(ex * 0.3) * 2 + seededRandom(ex * 7 + seg.index) * 3) * zoom;
+            ctx.fillRect(ex, sy1 - jag, 6 * zoom, edgeSize + jag);
+            ctx.fillRect(ex, sy1 + sy2 - edgeSize, 6 * zoom, edgeSize + jag);
+          }
+        }
+
+        // Tire tracks
+        ctx.strokeStyle = 'rgba(80,65,40,0.35)';
+        ctx.lineWidth = 2 * zoom;
+        ctx.setLineDash([15 * zoom, 5 * zoom]);
+        if (isVert) {
+          var t1x = (seg.x1 - 3 - camX) * zoom;
+          var t2x = (seg.x1 + 3 - camX) * zoom;
+          ctx.beginPath(); ctx.moveTo(t1x, sy1); ctx.lineTo(t1x, sy1 + sy2); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(t2x, sy1); ctx.lineTo(t2x, sy1 + sy2); ctx.stroke();
+        } else {
+          var t1y = (seg.y1 - 3 - camY) * zoom;
+          var t2y = (seg.y1 + 3 - camY) * zoom;
+          ctx.beginPath(); ctx.moveTo(sx1, t1y); ctx.lineTo(sx1 + sx2, t1y); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(sx1, t2y); ctx.lineTo(sx1 + sx2, t2y); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Scattered gravel dots
+        ctx.fillStyle = 'rgba(130,115,85,0.4)';
+        for (var g = 0; g < 15; g++) {
+          var gx = sx1 + seededRandom(seg.index * 50 + g * 13) * sx2;
+          var gy = sy1 + seededRandom(seg.index * 50 + g * 17 + 200) * sy2;
+          ctx.beginPath();
+          ctx.arc(gx, gy, (1 + seededRandom(g * 3) * 2) * zoom, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+      } else {
+        // City street
+        ctx.fillStyle = '#555';
+        ctx.fillRect(sx1, sy1, sx2, sy2);
+
+        // Subtle asphalt texture variation
+        ctx.fillStyle = 'rgba(70,70,70,0.2)';
+        for (var n = 0; n < 12; n++) {
+          var nx = sx1 + seededRandom(seg.index * 300 + n) * sx2;
+          var ny = sy1 + seededRandom(seg.index * 300 + n + 50) * sy2;
+          ctx.fillRect(nx, ny, (4 + seededRandom(n) * 8) * zoom, (2 + seededRandom(n + 10) * 4) * zoom);
+        }
+
+        // Yellow center dashed line
+        ctx.strokeStyle = '#ee0';
+        ctx.lineWidth = 1.5 * zoom;
+        ctx.setLineDash([12 * zoom, 8 * zoom]);
+        if (isVert) {
+          ctx.beginPath();
+          ctx.moveTo((seg.x1 - camX) * zoom, sy1);
+          ctx.lineTo((seg.x1 - camX) * zoom, sy1 + sy2);
+          ctx.stroke();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(sx1, (seg.y1 - camY) * zoom);
+          ctx.lineTo(sx1 + sx2, (seg.y1 - camY) * zoom);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Sidewalks on both sides
+        ctx.fillStyle = '#999';
+        var swW = 4 * zoom;
+        if (isVert) {
+          ctx.fillRect(sx1 - swW, sy1, swW, sy2);
+          ctx.fillRect(sx1 + sx2, sy1, swW, sy2);
+          // Sidewalk cracks
+          ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+          ctx.lineWidth = 0.5;
+          for (var cr = sy1; cr < sy1 + sy2; cr += 20 * zoom) {
+            ctx.beginPath(); ctx.moveTo(sx1 - swW, cr); ctx.lineTo(sx1, cr); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sx1 + sx2, cr); ctx.lineTo(sx1 + sx2 + swW, cr); ctx.stroke();
+          }
+        } else {
+          ctx.fillRect(sx1, sy1 - swW, sx2, swW);
+          ctx.fillRect(sx1, sy1 + sy2, sx2, swW);
+          ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+          ctx.lineWidth = 0.5;
+          for (var cr = sx1; cr < sx1 + sx2; cr += 20 * zoom) {
+            ctx.beginPath(); ctx.moveTo(cr, sy1 - swW); ctx.lineTo(cr, sy1); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(cr, sy1 + sy2); ctx.lineTo(cr, sy1 + sy2 + swW); ctx.stroke();
+          }
+        }
+      }
+    }
+
+    // Draw intersections
+    drawIntersections();
+
+    // Draw manholes
+    ctx.fillStyle = 'rgba(40,40,40,0.6)';
+    ctx.strokeStyle = 'rgba(60,60,60,0.4)';
+    ctx.lineWidth = 1 * zoom;
+    for (var mi = 0; mi < manholes.length; mi++) {
+      var mh = manholes[mi];
+      var mx = (mh.x - camX) * zoom;
+      var my = (mh.y - camY) * zoom;
+      if (mx < -10 || mx > W + 10 || my < -10 || my > H + 10) continue;
+      ctx.beginPath();
+      ctx.arc(mx, my, 3.5 * zoom, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Cross pattern on manhole
+      ctx.strokeStyle = 'rgba(80,80,80,0.5)';
+      ctx.lineWidth = 0.8 * zoom;
+      ctx.beginPath(); ctx.moveTo(mx - 2.5 * zoom, my); ctx.lineTo(mx + 2.5 * zoom, my); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mx, my - 2.5 * zoom); ctx.lineTo(mx, my + 2.5 * zoom); ctx.stroke();
+      ctx.strokeStyle = 'rgba(60,60,60,0.4)';
+      ctx.lineWidth = 1 * zoom;
+    }
+  }
+
+  function drawIntersections() {
+    var zoom = getZoom();
+    // Draw intersection details where roads cross
+    for (var i = 0; i < roadSegments.length; i++) {
+      var segA = roadSegments[i];
+      if (!segA.vertical) continue;
+      for (var j = 0; j < roadSegments.length; j++) {
+        var segB = roadSegments[j];
+        if (!segB.horizontal) continue;
+
+        // Intersection at (segA.x1, segB.y1)
+        var ix = segA.x1;
+        var iy = segB.y1;
+        var hwA = segA.width / 2;
+        var hwB = segB.width / 2;
+
+        var isx = (ix - hwA - camX) * zoom;
+        var isy = (iy - hwB - camY) * zoom;
+        var isw = segA.width * zoom;
+        var ish = segB.width * zoom;
+
+        if (isx + isw < -40 || isx > W + 40 || isy + ish < -40 || isy > H + 40) continue;
+
+        // Determine intersection type based on road types
+        var isHW = segA.type === 'highway' || segB.type === 'highway';
+        var isDirt = segA.type === 'dirt' && segB.type === 'dirt';
+
+        // Intersection fill
+        if (isHW) {
+          ctx.fillStyle = '#3a3a3a';
+        } else if (isDirt) {
+          ctx.fillStyle = '#9a8560';
+        } else {
+          ctx.fillStyle = '#555';
+        }
+        ctx.fillRect(isx, isy, isw, ish);
+
+        // Darker center
+        ctx.fillStyle = 'rgba(40,40,40,0.2)';
+        ctx.fillRect(isx, isy, isw, ish);
+
+        if (!isDirt) {
+          // Crosswalks - only for city streets (not on highways or dirt)
+          if (segA.type === 'city' && segB.type === 'city') {
+            var stripeW = 3 * zoom;
+            var stripeGap = 4 * zoom;
+            var stripeLen = Math.min(isw, ish) * 0.75;
+
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+
+            // Top & bottom crosswalks
+            for (var si = 0; si < 5; si++) {
+              var sy = isy - 4 * zoom - si * (stripeW + stripeGap);
+              ctx.fillRect(isx + (isw - stripeLen) / 2, sy, stripeLen, stripeW);
+              sy = isy + ish + 4 * zoom + si * (stripeW + stripeGap);
+              ctx.fillRect(isx + (isw - stripeLen) / 2, sy, stripeLen, stripeW);
+            }
+            // Left & right crosswalks
+            for (var si = 0; si < 5; si++) {
+              var sx = isx - 4 * zoom - si * (stripeW + stripeGap);
+              ctx.fillRect(sx, isy + (ish - stripeLen) / 2, stripeW, stripeLen);
+              sx = isx + isw + 4 * zoom + si * (stripeW + stripeGap);
+              ctx.fillRect(sx, isy + (ish - stripeLen) / 2, stripeW, stripeLen);
+            }
+
+            // Stop lines
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.fillRect(isx + 2 * zoom, isy - 2 * zoom, isw * 0.4 - 2 * zoom, 2 * zoom);
+            ctx.fillRect(isx + isw * 0.6, isy - 2 * zoom, isw * 0.4 - 2 * zoom, 2 * zoom);
+            ctx.fillRect(isx + 2 * zoom, isy + ish, isw * 0.4 - 2 * zoom, 2 * zoom);
+            ctx.fillRect(isx + isw * 0.6, isy + ish, isw * 0.4 - 2 * zoom, 2 * zoom);
+
+            // Corner curves
+            ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+            ctx.lineWidth = 1.5 * zoom;
+            ctx.beginPath(); ctx.arc(isx, isy, 4 * zoom, 0, Math.PI / 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(isx + isw, isy, 4 * zoom, Math.PI / 2, Math.PI); ctx.stroke();
+            ctx.beginPath(); ctx.arc(isx, isy + ish, 4 * zoom, -Math.PI / 2, 0); ctx.stroke();
+            ctx.beginPath(); ctx.arc(isx + isw, isy + ish, 4 * zoom, Math.PI, Math.PI * 1.5); ctx.stroke();
+          }
+
+          // Highway on/off ramp indicators where highway meets city street
+          if (isHW && (segA.type === 'city' || segB.type === 'city')) {
+            // Draw subtle ramp arrows
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            var arrowSize = 5 * zoom;
+            var cx = isx + isw / 2;
+            var cy = isy + ish / 2;
+            // Wider intersection spots
+            ctx.fillStyle = 'rgba(80,80,80,0.3)';
+            ctx.beginPath();
+            ctx.arc(cx, cy, Math.max(isw, ish) * 0.35, 0, Math.PI * 2);
+            ctx.fill();
+            // Small directional triangles
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.beginPath();
+            ctx.moveTo(cx - arrowSize, cy - arrowSize * 2);
+            ctx.lineTo(cx, cy - arrowSize * 3);
+            ctx.lineTo(cx + arrowSize, cy - arrowSize * 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(cx - arrowSize, cy + arrowSize * 2);
+            ctx.lineTo(cx, cy + arrowSize * 3);
+            ctx.lineTo(cx + arrowSize, cy + arrowSize * 2);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      }
+    }
+  }
+
+  // ==========================================
+  // DRAW BRIDGES
+  // ==========================================
+  function drawBridges() {
+    var zoom = getZoom();
+    for (var bi = 0; bi < bridges.length; bi++) {
+      var br = bridges[bi];
+      var bx = (br.x - camX) * zoom;
+      var by = (br.y - camY) * zoom;
+      var bw = br.w * zoom;
+      var bh = br.h * zoom;
+
+      if (bx + bw < -20 || bx > W + 20 || by + bh < -20 || by > H + 20) continue;
+
+      // Shadow underneath (to show elevation)
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(bx + 4 * zoom, by + 4 * zoom, bw, bh);
+
+      if (br.type === 'concrete') {
+        // Concrete bridge (highways) - wider, grey
+        ctx.fillStyle = '#707070';
+        ctx.fillRect(bx, by, bw, bh);
+
+        // Slightly lighter deck surface
+        ctx.fillStyle = '#808080';
+        ctx.fillRect(bx + 3 * zoom, by + 3 * zoom, bw - 6 * zoom, bh - 6 * zoom);
+
+        // Concrete texture
+        ctx.fillStyle = 'rgba(100,100,100,0.2)';
+        for (var n = 0; n < 8; n++) {
+          var tx = bx + seededRandom(bi * 100 + n) * bw;
+          var ty = by + seededRandom(bi * 100 + n + 50) * bh;
+          ctx.fillRect(tx, ty, 5 * zoom, 3 * zoom);
+        }
+
+        // Heavy railings
+        ctx.fillStyle = '#5a5a5a';
+        if (br.horizontal) {
+          ctx.fillRect(bx, by, bw, 3 * zoom);
+          ctx.fillRect(bx, by + bh - 3 * zoom, bw, 3 * zoom);
+          // Railing posts
+          for (var rp = bx; rp < bx + bw; rp += 15 * zoom) {
+            ctx.fillRect(rp, by, 2 * zoom, 3 * zoom);
+            ctx.fillRect(rp, by + bh - 3 * zoom, 2 * zoom, 3 * zoom);
+          }
+        } else {
+          ctx.fillRect(bx, by, 3 * zoom, bh);
+          ctx.fillRect(bx + bw - 3 * zoom, by, 3 * zoom, bh);
+          for (var rp = by; rp < by + bh; rp += 15 * zoom) {
+            ctx.fillRect(bx, rp, 3 * zoom, 2 * zoom);
+            ctx.fillRect(bx + bw - 3 * zoom, rp, 3 * zoom, 2 * zoom);
+          }
+        }
+
+        // Lane markings on bridge
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        ctx.lineWidth = 1 * zoom;
+        ctx.setLineDash([8 * zoom, 6 * zoom]);
+        if (br.horizontal) {
+          ctx.beginPath(); ctx.moveTo(bx, by + bh / 2); ctx.lineTo(bx + bw, by + bh / 2); ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.moveTo(bx + bw / 2, by); ctx.lineTo(bx + bw / 2, by + bh); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+      } else if (br.type === 'wood') {
+        // Wooden bridge (dirt roads) - brown, thinner
+        ctx.fillStyle = '#8a6a3a';
+        ctx.fillRect(bx, by, bw, bh);
+
+        // Plank lines
+        ctx.strokeStyle = 'rgba(60,40,20,0.4)';
+        ctx.lineWidth = 0.8 * zoom;
+        if (br.horizontal) {
+          for (var pl = bx; pl < bx + bw; pl += 6 * zoom) {
+            ctx.beginPath(); ctx.moveTo(pl, by); ctx.lineTo(pl, by + bh); ctx.stroke();
+          }
+        } else {
+          for (var pl = by; pl < by + bh; pl += 6 * zoom) {
+            ctx.beginPath(); ctx.moveTo(bx, pl); ctx.lineTo(bx + bw, pl); ctx.stroke();
+          }
+        }
+
+        // Lighter surface center
+        ctx.fillStyle = 'rgba(160,130,80,0.25)';
+        ctx.fillRect(bx + 2 * zoom, by + 2 * zoom, bw - 4 * zoom, bh - 4 * zoom);
+
+        // Wooden railings (thin brown lines)
+        ctx.strokeStyle = '#6a4a2a';
+        ctx.lineWidth = 2 * zoom;
+        if (br.horizontal) {
+          ctx.beginPath(); ctx.moveTo(bx, by + 1 * zoom); ctx.lineTo(bx + bw, by + 1 * zoom); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(bx, by + bh - 1 * zoom); ctx.lineTo(bx + bw, by + bh - 1 * zoom); ctx.stroke();
+          // Posts
+          ctx.lineWidth = 1.5 * zoom;
+          for (var rp = bx + 5 * zoom; rp < bx + bw; rp += 12 * zoom) {
+            ctx.beginPath(); ctx.moveTo(rp, by); ctx.lineTo(rp, by - 4 * zoom); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(rp, by + bh); ctx.lineTo(rp, by + bh + 4 * zoom); ctx.stroke();
+          }
+        } else {
+          ctx.beginPath(); ctx.moveTo(bx + 1 * zoom, by); ctx.lineTo(bx + 1 * zoom, by + bh); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(bx + bw - 1 * zoom, by); ctx.lineTo(bx + bw - 1 * zoom, by + bh); ctx.stroke();
+          ctx.lineWidth = 1.5 * zoom;
+          for (var rp = by + 5 * zoom; rp < by + bh; rp += 12 * zoom) {
+            ctx.beginPath(); ctx.moveTo(bx, rp); ctx.lineTo(bx - 4 * zoom, rp); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bw, rp); ctx.lineTo(bx + bw + 4 * zoom, rp); ctx.stroke();
+          }
+        }
+
+      } else {
+        // Steel bridge (city streets) - grey with steel girder pattern
+        ctx.fillStyle = '#686868';
+        ctx.fillRect(bx, by, bw, bh);
+
+        // Lighter deck
+        ctx.fillStyle = '#787878';
+        ctx.fillRect(bx + 2 * zoom, by + 2 * zoom, bw - 4 * zoom, bh - 4 * zoom);
+
+        // Steel girder pattern (diagonal cross-hatching on edges)
+        ctx.strokeStyle = 'rgba(100,110,120,0.5)';
+        ctx.lineWidth = 1 * zoom;
+        if (br.horizontal) {
+          // Top and bottom girder patterns
+          for (var gx = bx; gx < bx + bw; gx += 10 * zoom) {
+            ctx.beginPath(); ctx.moveTo(gx, by); ctx.lineTo(gx + 5 * zoom, by + 3 * zoom); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(gx + 5 * zoom, by); ctx.lineTo(gx, by + 3 * zoom); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(gx, by + bh - 3 * zoom); ctx.lineTo(gx + 5 * zoom, by + bh); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(gx + 5 * zoom, by + bh - 3 * zoom); ctx.lineTo(gx, by + bh); ctx.stroke();
+          }
+        } else {
+          for (var gy = by; gy < by + bh; gy += 10 * zoom) {
+            ctx.beginPath(); ctx.moveTo(bx, gy); ctx.lineTo(bx + 3 * zoom, gy + 5 * zoom); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx, gy + 5 * zoom); ctx.lineTo(bx + 3 * zoom, gy); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bw - 3 * zoom, gy); ctx.lineTo(bx + bw, gy + 5 * zoom); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bw - 3 * zoom, gy + 5 * zoom); ctx.lineTo(bx + bw, gy); ctx.stroke();
+          }
+        }
+
+        // Steel railings
+        ctx.strokeStyle = '#5a6a7a';
+        ctx.lineWidth = 2 * zoom;
+        if (br.horizontal) {
+          ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + bw, by); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.stroke();
+          // Vertical posts
+          ctx.lineWidth = 1.5 * zoom;
+          for (var rp = bx; rp <= bx + bw; rp += 12 * zoom) {
+            ctx.beginPath(); ctx.moveTo(rp, by - 2 * zoom); ctx.lineTo(rp, by + 2 * zoom); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(rp, by + bh - 2 * zoom); ctx.lineTo(rp, by + bh + 2 * zoom); ctx.stroke();
+          }
+        } else {
+          ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx, by + bh); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw, by + bh); ctx.stroke();
+          ctx.lineWidth = 1.5 * zoom;
+          for (var rp = by; rp <= by + bh; rp += 12 * zoom) {
+            ctx.beginPath(); ctx.moveTo(bx - 2 * zoom, rp); ctx.lineTo(bx + 2 * zoom, rp); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bw - 2 * zoom, rp); ctx.lineTo(bx + bw + 2 * zoom, rp); ctx.stroke();
+          }
+        }
+
+        // Center lane line
+        ctx.strokeStyle = '#ee0';
+        ctx.lineWidth = 1 * zoom;
+        ctx.setLineDash([8 * zoom, 6 * zoom]);
+        if (br.horizontal) {
+          ctx.beginPath(); ctx.moveTo(bx, by + bh / 2); ctx.lineTo(bx + bw, by + bh / 2); ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.moveTo(bx + bw / 2, by); ctx.lineTo(bx + bw / 2, by + bh); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
   function drawGround() {
     var zoom = getZoom();
 
@@ -1355,11 +2095,7 @@
       ctx.fill();
     }
 
-    var roadW = 40;
-    var blockSize = 200;
-    var cols = Math.floor(worldW / (blockSize + roadW)) + 1;
-    var rows = Math.floor(worldH / (blockSize + roadW)) + 1;
-
+    // Draw parks
     for (var pi = 0; pi < parks.length; pi++) {
       drawPark(parks[pi]);
     }
@@ -1381,114 +2117,21 @@
       ctx.stroke();
     }
 
-    // Draw roads
-    ctx.fillStyle = '#555';
-    for (var col = 0; col <= cols; col++) {
-      var rx = (col * (blockSize + roadW) - camX) * zoom;
-      ctx.fillRect(rx, -camY * zoom, roadW * zoom, worldH * zoom);
-      ctx.strokeStyle = '#ee0';
-      ctx.lineWidth = 1.5 * zoom;
-      ctx.setLineDash([12 * zoom, 8 * zoom]);
-      ctx.beginPath();
-      ctx.moveTo(rx + roadW / 2 * zoom, -camY * zoom);
-      ctx.lineTo(rx + roadW / 2 * zoom, (worldH - camY) * zoom);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    for (var row = 0; row <= rows; row++) {
-      var ry = (row * (blockSize + roadW) - camY) * zoom;
-      ctx.fillRect(-camX * zoom, ry, worldW * zoom, roadW * zoom);
-      ctx.strokeStyle = '#ee0';
-      ctx.lineWidth = 1.5 * zoom;
-      ctx.setLineDash([12 * zoom, 8 * zoom]);
-      ctx.beginPath();
-      ctx.moveTo(-camX * zoom, ry + roadW / 2 * zoom);
-      ctx.lineTo((worldW - camX) * zoom, ry + roadW / 2 * zoom);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
+    // Draw roads (varied types)
+    drawRoads();
 
-    // Crosswalks at intersections - wider, more realistic zebra stripes
-    for (var col = 0; col <= cols; col++) {
-      for (var row = 0; row <= rows; row++) {
-        var ix = (col * (blockSize + roadW) - camX) * zoom;
-        var iy = (row * (blockSize + roadW) - camY) * zoom;
-        var rw = roadW * zoom;
-        if (ix + rw < -40 || ix > W + 40 || iy + rw < -40 || iy > H + 40) continue;
-
-        // Intersection darker asphalt
-        ctx.fillStyle = 'rgba(40,40,40,0.3)';
-        ctx.fillRect(ix, iy, rw, rw);
-
-        // Stop lines (white bars at intersection edges)
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-        ctx.fillRect(ix + 2 * zoom, iy - 2 * zoom, rw * 0.4 - 2 * zoom, 2 * zoom);
-        ctx.fillRect(ix + rw * 0.6, iy - 2 * zoom, rw * 0.4 - 2 * zoom, 2 * zoom);
-        ctx.fillRect(ix + 2 * zoom, iy + rw, rw * 0.4 - 2 * zoom, 2 * zoom);
-        ctx.fillRect(ix + rw * 0.6, iy + rw, rw * 0.4 - 2 * zoom, 2 * zoom);
-
-        var stripeW = 3 * zoom;
-        var stripeGap = 4 * zoom;
-        var stripeLen = rw * 0.75;
-
-        // Top crosswalk
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        for (var si = 0; si < 6; si++) {
-          var sy = iy - 4 * zoom - si * (stripeW + stripeGap);
-          ctx.fillRect(ix + (rw - stripeLen) / 2, sy, stripeLen, stripeW);
-        }
-        // Bottom crosswalk
-        for (var si = 0; si < 6; si++) {
-          var sy = iy + rw + 4 * zoom + si * (stripeW + stripeGap);
-          ctx.fillRect(ix + (rw - stripeLen) / 2, sy, stripeLen, stripeW);
-        }
-        // Left crosswalk
-        for (var si = 0; si < 6; si++) {
-          var sx = ix - 4 * zoom - si * (stripeW + stripeGap);
-          ctx.fillRect(sx, iy + (rw - stripeLen) / 2, stripeW, stripeLen);
-        }
-        // Right crosswalk
-        for (var si = 0; si < 6; si++) {
-          var sx = ix + rw + 4 * zoom + si * (stripeW + stripeGap);
-          ctx.fillRect(sx, iy + (rw - stripeLen) / 2, stripeW, stripeLen);
-        }
-
-        // Corner curve marks (rounded intersection corners)
-        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-        ctx.lineWidth = 1.5 * zoom;
-        // top-left
-        ctx.beginPath(); ctx.arc(ix, iy, 4 * zoom, 0, Math.PI / 2); ctx.stroke();
-        // top-right
-        ctx.beginPath(); ctx.arc(ix + rw, iy, 4 * zoom, Math.PI / 2, Math.PI); ctx.stroke();
-        // bottom-left
-        ctx.beginPath(); ctx.arc(ix, iy + rw, 4 * zoom, -Math.PI / 2, 0); ctx.stroke();
-        // bottom-right
-        ctx.beginPath(); ctx.arc(ix + rw, iy + rw, 4 * zoom, Math.PI, Math.PI * 1.5); ctx.stroke();
-      }
-    }
-
-    // Sidewalks along roads
-    ctx.fillStyle = '#999';
-    for (var col = 0; col <= cols; col++) {
-      var rx = (col * (blockSize + roadW) - camX) * zoom;
-      ctx.fillRect(rx - 4 * zoom, -camY * zoom, 4 * zoom, worldH * zoom);
-      ctx.fillRect(rx + roadW * zoom, -camY * zoom, 4 * zoom, worldH * zoom);
-    }
-    for (var row = 0; row <= rows; row++) {
-      var ry = (row * (blockSize + roadW) - camY) * zoom;
-      ctx.fillRect(-camX * zoom, ry - 4 * zoom, worldW * zoom, 4 * zoom);
-      ctx.fillRect(-camX * zoom, ry + roadW * zoom, worldW * zoom, 4 * zoom);
-    }
-
-    // Draw rivers
+    // Draw rivers (under bridges)
     for (var ri = 0; ri < rivers.length; ri++) {
       drawRiver(rivers[ri]);
     }
 
-    // Draw lakes
+    // Draw lakes (under bridges)
     for (var li = 0; li < lakes.length; li++) {
       drawLake(lakes[li]);
     }
+
+    // Draw bridges ON TOP of water
+    drawBridges();
 
     // Draw world details on roads/sidewalks
     drawWorldDetails();
@@ -1527,17 +2170,13 @@
       var sx = (fh.x - camX) * zoom;
       var sy = (fh.y - camY) * zoom;
       if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
-      // Red body
       ctx.fillStyle = '#cc2222';
       ctx.fillRect(sx - 2.5 * zoom, sy - 5 * zoom, 5 * zoom, 7 * zoom);
-      // Silver top cap
       ctx.fillStyle = '#c0c0c0';
       ctx.fillRect(sx - 3 * zoom, sy - 6 * zoom, 6 * zoom, 2 * zoom);
-      // Silver nozzle
       ctx.fillStyle = '#aaa';
       ctx.fillRect(sx + 2.5 * zoom, sy - 3 * zoom, 2 * zoom, 2 * zoom);
       ctx.fillRect(sx - 4.5 * zoom, sy - 3 * zoom, 2 * zoom, 2 * zoom);
-      // Base
       ctx.fillStyle = '#991111';
       ctx.fillRect(sx - 3.5 * zoom, sy + 1 * zoom, 7 * zoom, 2 * zoom);
     }
@@ -1548,16 +2187,12 @@
       var sx = (sl.x - camX) * zoom;
       var sy = (sl.y - camY) * zoom;
       if (sx < -20 || sx > W + 20 || sy < -30 || sy > H + 10) continue;
-      // Pole
       ctx.fillStyle = '#666';
       ctx.fillRect(sx - 1 * zoom, sy - 18 * zoom, 2 * zoom, 18 * zoom);
-      // Arm
       ctx.fillStyle = '#777';
       ctx.fillRect(sx - 1 * zoom, sy - 18 * zoom, 5 * zoom, 1.5 * zoom);
-      // Light fixture
       ctx.fillStyle = '#888';
       ctx.fillRect(sx + 2 * zoom, sy - 19 * zoom, 4 * zoom, 3 * zoom);
-      // Yellow glow
       ctx.beginPath();
       ctx.arc(sx + 4 * zoom, sy - 17.5 * zoom, 6 * zoom, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(255,230,100,0.08)';
@@ -1566,7 +2201,6 @@
       ctx.arc(sx + 4 * zoom, sy - 17.5 * zoom, 3 * zoom, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(255,230,100,0.15)';
       ctx.fill();
-      // Bulb
       ctx.beginPath();
       ctx.arc(sx + 4 * zoom, sy - 17 * zoom, 1.2 * zoom, 0, Math.PI * 2);
       ctx.fillStyle = '#ffee88';
@@ -1579,23 +2213,17 @@
       var sx = (bs.x - camX) * zoom;
       var sy = (bs.y - camY) * zoom;
       if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) continue;
-      // Shelter roof
       ctx.fillStyle = 'rgba(100,120,140,0.8)';
       ctx.fillRect(sx, sy - bs.h * zoom, bs.w * zoom, 2 * zoom);
-      // Poles
       ctx.fillStyle = '#888';
       ctx.fillRect(sx, sy - bs.h * zoom, 1.5 * zoom, bs.h * zoom);
       ctx.fillRect(sx + (bs.w - 1.5) * zoom, sy - bs.h * zoom, 1.5 * zoom, bs.h * zoom);
-      // Back wall
       ctx.fillStyle = 'rgba(150,170,190,0.5)';
       ctx.fillRect(sx, sy - bs.h * zoom, bs.w * zoom, bs.h * zoom);
-      // Glass panel
       ctx.fillStyle = 'rgba(180,220,255,0.2)';
       ctx.fillRect(sx + 1.5 * zoom, sy - (bs.h - 2) * zoom, (bs.w - 3) * zoom, (bs.h - 4) * zoom);
-      // Bench
       ctx.fillStyle = '#8a6a40';
       ctx.fillRect(sx + 2 * zoom, sy - 3 * zoom, (bs.w - 4) * zoom, 2 * zoom);
-      // Sign
       ctx.fillStyle = '#2255aa';
       ctx.fillRect(sx + bs.w * zoom + 1 * zoom, sy - (bs.h + 4) * zoom, 3 * zoom, 5 * zoom);
     }
@@ -1606,16 +2234,12 @@
       var sx = (d.x - camX) * zoom;
       var sy = (d.y - camY) * zoom;
       if (sx < -15 || sx > W + 15 || sy < -15 || sy > H + 15) continue;
-      // Body
       ctx.fillStyle = '#2a5a2a';
       ctx.fillRect(sx, sy - d.h * zoom, d.w * zoom, d.h * zoom);
-      // Darker bottom
       ctx.fillStyle = '#1a3a1a';
       ctx.fillRect(sx, sy - 2 * zoom, d.w * zoom, 2 * zoom);
-      // Lid
       ctx.fillStyle = '#3a7a3a';
       ctx.fillRect(sx - 0.5 * zoom, sy - (d.h + 1.5) * zoom, (d.w + 1) * zoom, 2 * zoom);
-      // Handle
       ctx.fillStyle = '#222';
       ctx.fillRect(sx + d.w * 0.3 * zoom, sy - (d.h + 2.5) * zoom, d.w * 0.4 * zoom, 1.5 * zoom);
     }
@@ -1626,21 +2250,16 @@
       var sx = (mb.x - camX) * zoom;
       var sy = (mb.y - camY) * zoom;
       if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
-      // Post
       ctx.fillStyle = '#2244aa';
       ctx.fillRect(sx - 1 * zoom, sy - 3 * zoom, 2 * zoom, 5 * zoom);
-      // Box
       ctx.fillStyle = '#2255cc';
       ctx.fillRect(sx - 3 * zoom, sy - 7 * zoom, 6 * zoom, 5 * zoom);
-      // Top rounded
       ctx.beginPath();
       ctx.arc(sx, sy - 7 * zoom, 3 * zoom, Math.PI, 0);
       ctx.fillStyle = '#2255cc';
       ctx.fill();
-      // Slot
       ctx.fillStyle = '#1a3388';
       ctx.fillRect(sx - 2 * zoom, sy - 5 * zoom, 4 * zoom, 0.8 * zoom);
-      // USPS text indicator
       ctx.fillStyle = '#aaccff';
       ctx.fillRect(sx - 2 * zoom, sy - 4 * zoom, 4 * zoom, 0.5 * zoom);
     }
@@ -2240,6 +2859,8 @@
     var isoBuildings = [];
     var isoDust = [];
     var fallingBuildings = [];
+    // Start screen road lines for polish
+    var isoRoads = [];
 
     function resizeStart() {
       sc.width = window.innerWidth;
@@ -2252,6 +2873,7 @@
       isoBuildings = [];
       isoDust = [];
       fallingBuildings = [];
+      isoRoads = [];
       holeRadius = 10;
 
       var cx = sc.width / 2;
@@ -2260,19 +2882,33 @@
       var cellW = 28;
       var cellH = 14;
 
+      // Generate iso roads (every 4 grid cells)
+      for (var gx = -gridSize; gx <= gridSize; gx++) {
+        if (gx % 4 === 0) {
+          isoRoads.push({ gx: gx, gy: -gridSize, gx2: gx, gy2: gridSize, isHighway: gx === 0 || gx === 8 || gx === -8 });
+        }
+      }
+      for (var gy = -gridSize; gy <= gridSize; gy++) {
+        if (gy % 4 === 0) {
+          isoRoads.push({ gx: -gridSize, gy: gy, gx2: gridSize, gy2: gy, isHighway: gy === 0 || gy === 8 || gy === -8 });
+        }
+      }
+
       for (var gx = -gridSize; gx <= gridSize; gx++) {
         for (var gy = -gridSize; gy <= gridSize; gy++) {
-          // Isometric projection
           var isoX = cx + (gx - gy) * cellW * 0.5;
           var isoY = cy + (gx + gy) * cellH * 0.5;
 
           if (isoX < -60 || isoX > sc.width + 60 || isoY < -60 || isoY > sc.height + 60) continue;
 
+          // Skip on roads
+          if (gx % 4 === 0 || gy % 4 === 0) continue;
+
           var dist = Math.sqrt(gx * gx + gy * gy);
           if (Math.random() > 0.65 || dist < 1.5) continue;
 
           var bh = 8 + Math.random() * 45;
-          if (dist < 5) bh = 15 + Math.random() * 60; // taller near center
+          if (dist < 5) bh = 15 + Math.random() * 60;
           var bw = cellW * 0.38;
           var hue = 210 + Math.random() * 30;
           var light = 10 + Math.random() * 15;
@@ -2294,7 +2930,6 @@
             fallDir: Math.random() * Math.PI * 2
           });
 
-          // Add windows
           var b = isoBuildings[isoBuildings.length - 1];
           var numFloors = Math.floor(bh / 6);
           var wpc = Math.max(1, Math.floor(bw / 5));
@@ -2308,10 +2943,8 @@
         }
       }
 
-      // Sort by y for depth
       isoBuildings.sort(function(a, b) { return a.y - b.y; });
 
-      // Dust particles
       for (var i = 0; i < 80; i++) {
         isoDust.push({
           x: Math.random() * sc.width,
@@ -2334,7 +2967,6 @@
 
       sctx.clearRect(0, 0, sc.width, sc.height);
 
-      // Dark cinematic background
       var bgGrad = sctx.createLinearGradient(0, 0, 0, sc.height);
       bgGrad.addColorStop(0, '#050810');
       bgGrad.addColorStop(0.3, '#0a1020');
@@ -2343,7 +2975,6 @@
       sctx.fillStyle = bgGrad;
       sctx.fillRect(0, 0, sc.width, sc.height);
 
-      // Animated clouds / atmospheric haze
       cloudOffsetX += 0.15;
       sctx.globalAlpha = 0.04;
       for (var ci = 0; ci < 6; ci++) {
@@ -2356,25 +2987,47 @@
       }
       sctx.globalAlpha = 1;
 
-      // Grow the hole
       if (holeRadius < holeMaxRadius) {
         holeRadius += holeGrowRate;
       } else {
-        // Pulse when at max
         holeRadius = holeMaxRadius + Math.sin(t * 2) * 3;
       }
       holeAngle += 0.025;
 
       var holeCX = sc.width / 2;
       var holeCY = sc.height * 0.42;
+      var cellW = 28;
+      var cellH = 14;
+      var cx = sc.width / 2;
+      var cy = sc.height * 0.42;
 
-      // Draw isometric buildings
+      // Draw iso road lines (subtle dark lines on the ground)
+      sctx.strokeStyle = 'rgba(40,40,50,0.5)';
+      sctx.lineWidth = 2;
+      for (var ri = 0; ri < isoRoads.length; ri++) {
+        var rd = isoRoads[ri];
+        var x1 = cx + (rd.gx - rd.gy) * cellW * 0.5;
+        var y1 = cy + (rd.gx + rd.gy) * cellH * 0.5;
+        var x2 = cx + (rd.gx2 - rd.gy2) * cellW * 0.5;
+        var y2 = cy + (rd.gx2 + rd.gy2) * cellH * 0.5;
+        if (rd.isHighway) {
+          sctx.strokeStyle = 'rgba(50,50,60,0.7)';
+          sctx.lineWidth = 3;
+        } else {
+          sctx.strokeStyle = 'rgba(40,40,50,0.4)';
+          sctx.lineWidth = 1.5;
+        }
+        sctx.beginPath();
+        sctx.moveTo(x1, y1);
+        sctx.lineTo(x2, y2);
+        sctx.stroke();
+      }
+
       for (var i = 0; i < isoBuildings.length; i++) {
         var b = isoBuildings[i];
 
-        // Check if building should fall into hole
         var dx = b.x - holeCX;
-        var dy = (b.y - holeCY) * 1.8; // stretched for iso
+        var dy = (b.y - holeCY) * 1.8;
         var bDist = Math.sqrt(dx * dx + dy * dy);
         var holeEdge = holeRadius * 1.8;
 
@@ -2385,24 +3038,21 @@
 
         if (b.fallen) {
           b.fallT += 0.015;
-          if (b.fallT >= 1) continue; // fully gone
+          if (b.fallT >= 1) continue;
 
           sctx.save();
           sctx.globalAlpha = 1 - b.fallT;
           var pullX = (holeCX - b.x) * b.fallT * 0.5;
           var pullY = (holeCY - b.y) * b.fallT * 0.5;
           sctx.translate(b.x + pullX, b.y + pullY);
-          // Tilt toward hole
           sctx.rotate(b.fallT * 1.2 * (b.fallDir > 0 ? 1 : -1));
           sctx.scale(1 - b.fallT * 0.5, 1 - b.fallT * 0.5);
           sctx.translate(-b.x, -b.y);
         }
 
-        // Draw building
         var bx = b.x;
         var by = b.y;
 
-        // Side face
         sctx.fillStyle = b.sideColor;
         sctx.beginPath();
         sctx.moveTo(bx + b.w * 0.5, by);
@@ -2412,7 +3062,6 @@
         sctx.closePath();
         sctx.fill();
 
-        // Top face
         sctx.fillStyle = b.topColor;
         sctx.beginPath();
         sctx.moveTo(bx - b.w * 0.5, by - b.h);
@@ -2422,11 +3071,9 @@
         sctx.closePath();
         sctx.fill();
 
-        // Front face
         sctx.fillStyle = b.color;
         sctx.fillRect(bx - b.w * 0.5, by - b.h, b.w, b.h);
 
-        // Windows
         var ww = 2.5, wh = 2.5;
         var wpc = Math.max(1, Math.floor(b.w / 5));
         var gap = b.w / (wpc + 1);
@@ -2446,10 +3093,9 @@
         }
       }
 
-      // Draw the hole (black abyss)
+      // Draw the hole
       sctx.save();
       sctx.beginPath();
-      // Isometric ellipse for the hole
       sctx.ellipse(holeCX, holeCY, holeRadius * 1.3, holeRadius * 0.65, 0, 0, Math.PI * 2);
       var holeGrad = sctx.createRadialGradient(holeCX, holeCY, 0, holeCX, holeCY, holeRadius * 1.3);
       holeGrad.addColorStop(0, '#000');
@@ -2459,7 +3105,6 @@
       sctx.fillStyle = holeGrad;
       sctx.fill();
 
-      // Spinning blade lines inside hole
       for (var bl = 0; bl < 6; bl++) {
         var ba = holeAngle + (Math.PI / 3) * bl;
         var bladeR = holeRadius * 0.8;
@@ -2476,7 +3121,6 @@
         sctx.stroke();
       }
 
-      // Spiral vortex
       for (var sp = 0; sp < 2; sp++) {
         sctx.beginPath();
         var spStart = holeAngle * 2 + sp * Math.PI;
@@ -2492,7 +3136,6 @@
         sctx.stroke();
       }
 
-      // Center hub glow
       sctx.beginPath();
       sctx.arc(holeCX, holeCY, holeRadius * 0.12, 0, Math.PI * 2);
       sctx.fillStyle = '#e85d26';
@@ -2505,7 +3148,6 @@
       sctx.fillStyle = hubGlow;
       sctx.fill();
 
-      // Cracked earth rim around hole
       sctx.beginPath();
       sctx.ellipse(holeCX, holeCY, holeRadius * 1.4, holeRadius * 0.7, 0, 0, Math.PI * 2);
       var rimGrad2 = sctx.createRadialGradient(holeCX, holeCY, holeRadius * 0.8, holeCX, holeCY, holeRadius * 1.5);
@@ -2515,7 +3157,6 @@
       sctx.fillStyle = rimGrad2;
       sctx.fill();
 
-      // Crack lines
       sctx.strokeStyle = 'rgba(80,50,20,0.3)';
       sctx.lineWidth = 1;
       for (var cr = 0; cr < 16; cr++) {
@@ -2530,7 +3171,6 @@
 
       sctx.restore();
 
-      // Dust/debris particles
       for (var i = 0; i < isoDust.length; i++) {
         var m = isoDust[i];
         m.x += m.vx + Math.sin(t * 0.5 + m.phase) * 0.2;
@@ -2546,7 +3186,6 @@
         sctx.fill();
       }
 
-      // Atmospheric glow near hole
       sctx.beginPath();
       sctx.arc(holeCX, holeCY, holeRadius * 2.5, 0, Math.PI * 2);
       var atmoGrad = sctx.createRadialGradient(holeCX, holeCY, holeRadius * 0.5, holeCX, holeCY, holeRadius * 2.5);
@@ -2556,19 +3195,22 @@
       sctx.fillStyle = atmoGrad;
       sctx.fill();
 
+      // Subtle scanline overlay for cinematic feel
+      sctx.fillStyle = 'rgba(0,0,0,0.03)';
+      for (var sl = 0; sl < sc.height; sl += 4) {
+        sctx.fillRect(0, sl, sc.width, 1);
+      }
+
       requestAnimationFrame(drawStartScreen);
     }
     drawStartScreen();
 
-    // Stop animation when start screen is hidden
     var origHide = null;
     function stopStartAnim() {
       startActive = false;
     }
 
-    // Tap anywhere to start
     document.getElementById('start-screen').addEventListener('click', function(e) {
-      // Don't double-fire if they clicked the button
       if (e.target.id === 'start-btn' || e.target.classList.contains('btn-shimmer')) return;
       startGame();
     });
@@ -2590,7 +3232,6 @@
 
   document.getElementById('level-btn').addEventListener('click', function() {
     document.getElementById('level-screen').style.display = 'none';
-    // level was already incremented when level was completed
     initLevel(level);
     gameRunning = true;
   });
