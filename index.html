@@ -178,6 +178,16 @@
     var winsPerFloor = Math.max(1, Math.floor(bw / 12));
     var floorH = bh / floors;
 
+    // Pre-compute window lit states
+    var windowLit = [];
+    for (var wf = 0; wf < floors; wf++) {
+      var row = [];
+      for (var ww = 0; ww < winsPerFloor; ww++) {
+        row.push(Math.random() > 0.3);
+      }
+      windowLit.push(row);
+    }
+
     // Roof style
     var roofType = type === 'house' ? 'peaked' : (type === 'skyscraper' ? 'antenna' : (Math.random() > 0.5 ? 'flat' : 'ledge'));
 
@@ -185,10 +195,25 @@
     var doorW = Math.min(bw * 0.25, 10);
     var doorH = Math.min(floorH * 0.6, 16);
 
+    // Awning for shops
+    var hasAwning = type === 'shop' && Math.random() > 0.3;
+    var awningColor = PALETTES[Math.floor(Math.random() * PALETTES.length)].wall;
+
+    // AC units for apartments/offices
+    var acUnits = [];
+    if ((type === 'apartment' || type === 'office') && Math.random() > 0.5) {
+      var numAC = 1 + Math.floor(Math.random() * 2);
+      for (var ac = 0; ac < numAC; ac++) {
+        acUnits.push({ floor: Math.floor(Math.random() * floors), side: Math.random() > 0.5 ? 'left' : 'right' });
+      }
+    }
+
     return {
       x: x, y: y, w: bw, h: bh, type: type, pal: pal,
       floors: floors, floorH: floorH, winsPerFloor: winsPerFloor,
+      windowLit: windowLit,
       roofType: roofType, doorW: doorW, doorH: doorH,
+      hasAwning: hasAwning, awningColor: awningColor, acUnits: acUnits,
       sizeClass: sizeClass,
       falling: false, fallProgress: 0, fallDir: 0,
       absorbed: false,
@@ -304,7 +329,7 @@
       var dy = touchY - touchStartY;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > 5) {
-        var speed = Math.min(dist * 0.07, 6);
+        var speed = Math.min(dist * 0.04, 3.5);
         player.x += (dx / dist) * speed;
         player.y += (dy / dist) * speed;
       }
@@ -328,7 +353,7 @@
       var dy = tr.y - player.y;
       if (Math.sqrt(dx * dx + dy * dy) < player.r) {
         tr.absorbed = true;
-        player.r += 0.5;
+        player.r += 0.15;
         spawnParticles(tr.x, tr.y, tr.shade, 4);
       }
     }
@@ -369,7 +394,7 @@
           b.absorbed = true;
           eaten++;
           score += Math.floor(b.h * b.w / 8) * (b.sizeClass + 1);
-          player.r += b.w * 0.12 + b.sizeClass * 1.5;
+          player.r += b.w * 0.04 + b.sizeClass * 0.5;
           document.getElementById('score').textContent = score;
           updateSizeBar();
           spawnDebris(b.x, b.y, b.w, b.pal, 6);
@@ -541,7 +566,36 @@
       ctx.fillRect(0, fy - 1, b.w, 1);
     }
 
-    // Windows
+    // Brick/panel lines for detail
+    if (b.type === 'house' || b.type === 'apartment') {
+      ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+      ctx.lineWidth = 0.5;
+      var brickH = 4;
+      for (var br = 0; br < b.h / brickH; br++) {
+        var bry = -br * brickH;
+        ctx.beginPath(); ctx.moveTo(0, bry); ctx.lineTo(b.w, bry); ctx.stroke();
+        // Offset bricks every other row
+        if (br % 2 === 0) {
+          for (var bx = 0; bx < b.w; bx += 10) {
+            ctx.beginPath(); ctx.moveTo(bx, bry); ctx.lineTo(bx, bry - brickH); ctx.stroke();
+          }
+        } else {
+          for (var bx = 5; bx < b.w; bx += 10) {
+            ctx.beginPath(); ctx.moveTo(bx, bry); ctx.lineTo(bx, bry - brickH); ctx.stroke();
+          }
+        }
+      }
+    } else if (b.type === 'office' || b.type === 'skyscraper') {
+      // Vertical panel lines
+      ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+      ctx.lineWidth = 0.5;
+      var panelW = b.w / (b.winsPerFloor + 1);
+      for (var pl = 1; pl <= b.winsPerFloor; pl++) {
+        ctx.beginPath(); ctx.moveTo(pl * panelW, -b.h); ctx.lineTo(pl * panelW, 0); ctx.stroke();
+      }
+    }
+
+    // Windows (using pre-computed lit states)
     var winW = 5;
     var winH = 6;
     var winGap = (b.w - 6) / b.winsPerFloor;
@@ -550,31 +604,77 @@
       for (var wi = 0; wi < b.winsPerFloor; wi++) {
         var wx = 5 + wi * winGap;
         // Window frame
-        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
         ctx.fillRect(wx - 1, fy - winH - 1, winW + 2, winH + 2);
-        // Window glass - lit or dark
-        var lit = Math.random() > 0.3;
+        // Window glass - stable lit state
+        var lit = b.windowLit[f][wi];
         ctx.fillStyle = lit ? b.pal.win : 'rgba(40,60,80,0.8)';
         ctx.fillRect(wx, fy - winH, winW, winH);
-        // Window glare
+        // Window cross divider
+        ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath(); ctx.moveTo(wx + winW/2, fy - winH); ctx.lineTo(wx + winW/2, fy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(wx, fy - winH/2); ctx.lineTo(wx + winW, fy - winH/2); ctx.stroke();
+        // Subtle glare
         if (lit) {
-          ctx.fillStyle = 'rgba(255,255,255,0.25)';
-          ctx.fillRect(wx, fy - winH, winW * 0.4, winH * 0.4);
+          ctx.fillStyle = 'rgba(255,255,255,0.15)';
+          ctx.fillRect(wx, fy - winH, winW * 0.35, winH * 0.35);
         }
+        // Window sill
+        ctx.fillStyle = 'rgba(0,0,0,0.1)';
+        ctx.fillRect(wx - 1, fy, winW + 2, 1.5);
       }
+    }
+
+    // AC units
+    for (var ac = 0; ac < b.acUnits.length; ac++) {
+      var unit = b.acUnits[ac];
+      var acY = -unit.floor * b.floorH - b.floorH * 0.3;
+      var acX = unit.side === 'left' ? -4 : b.w;
+      ctx.fillStyle = '#bbb';
+      ctx.fillRect(acX, acY - 5, 5, 5);
+      ctx.fillStyle = '#999';
+      ctx.fillRect(acX + 0.5, acY - 4.5, 4, 1);
+      ctx.fillRect(acX + 0.5, acY - 2.5, 4, 1);
     }
 
     // Door (ground floor)
     ctx.fillStyle = '#4a3020';
     var doorX = b.w / 2 - b.doorW / 2;
     ctx.fillRect(doorX, -b.doorH, b.doorW, b.doorH);
-    ctx.fillStyle = 'rgba(255,255,255,0.1)';
-    ctx.fillRect(doorX + 1, -b.doorH + 1, b.doorW - 2, b.doorH * 0.4);
+    // Door panels
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(doorX + 2, -b.doorH + 2, b.doorW - 4, b.doorH * 0.4);
+    ctx.strokeRect(doorX + 2, -b.doorH * 0.5, b.doorW - 4, b.doorH * 0.4);
+    // Door window
+    ctx.fillStyle = 'rgba(200,220,240,0.3)';
+    ctx.fillRect(doorX + 2, -b.doorH + 2, b.doorW - 4, b.doorH * 0.35);
     // Door knob
     ctx.fillStyle = '#c0a040';
     ctx.beginPath();
-    ctx.arc(doorX + b.doorW * 0.75, -b.doorH * 0.4, 1.2, 0, Math.PI * 2);
+    ctx.arc(doorX + b.doorW * 0.78, -b.doorH * 0.35, 1.2, 0, Math.PI * 2);
     ctx.fill();
+    // Door step
+    ctx.fillStyle = '#888';
+    ctx.fillRect(doorX - 3, 0, b.doorW + 6, 2);
+
+    // Shop awning
+    if (b.hasAwning) {
+      ctx.fillStyle = b.awningColor;
+      ctx.beginPath();
+      ctx.moveTo(0, -b.doorH - 4);
+      ctx.lineTo(b.w, -b.doorH - 4);
+      ctx.lineTo(b.w + 4, -b.doorH + 6);
+      ctx.lineTo(-4, -b.doorH + 6);
+      ctx.closePath();
+      ctx.fill();
+      // Awning stripes
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      for (var as = 0; as < b.w; as += 6) {
+        ctx.fillRect(as, -b.doorH - 4, 3, 10);
+      }
+    }
 
     // Roof details
     if (b.roofType === 'peaked') {
@@ -592,32 +692,50 @@
       ctx.lineTo(b.w / 2, -b.h);
       ctx.closePath();
       ctx.fill();
+      // Chimney
+      ctx.fillStyle = '#8a6040';
+      ctx.fillRect(b.w * 0.7, -b.h - 12, 6, 12);
+      ctx.fillStyle = '#666';
+      ctx.fillRect(b.w * 0.7 - 1, -b.h - 14, 8, 3);
     } else if (b.roofType === 'antenna') {
+      // Rooftop equipment
+      ctx.fillStyle = '#777';
+      ctx.fillRect(b.w * 0.15, -b.h - 5, 8, 5);
+      ctx.fillRect(b.w * 0.6, -b.h - 3, 6, 3);
+      // Antenna
       ctx.strokeStyle = '#888';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(b.w / 2, -b.h);
       ctx.lineTo(b.w / 2, -b.h - 20);
       ctx.stroke();
-      // Blinking light
-      ctx.fillStyle = Math.sin(Date.now() * 0.005) > 0 ? '#ff3030' : '#801010';
+      // Steady red light (no more flashing)
+      ctx.fillStyle = '#ff3030';
       ctx.beginPath();
       ctx.arc(b.w / 2, -b.h - 20, 2, 0, Math.PI * 2);
+      ctx.fill();
+      // Subtle glow around light
+      ctx.fillStyle = 'rgba(255,48,48,0.15)';
+      ctx.beginPath();
+      ctx.arc(b.w / 2, -b.h - 20, 5, 0, Math.PI * 2);
       ctx.fill();
     } else if (b.roofType === 'ledge') {
       ctx.fillStyle = b.pal.accent;
       ctx.fillRect(-3, -b.h - 4, b.w + 6, 5);
-    }
-
-    // Too-big indicator: red tint if can't eat
-    if (!canEat && !b.falling) {
-      ctx.fillStyle = 'rgba(255,50,50,0.08)';
-      ctx.fillRect(0, -b.h, b.w, b.h);
+      // Rooftop railing
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, -b.h - 6); ctx.lineTo(b.w, -b.h - 6); ctx.stroke();
+      for (var rl = 0; rl < b.w; rl += 8) {
+        ctx.beginPath(); ctx.moveTo(rl, -b.h - 4); ctx.lineTo(rl, -b.h - 7); ctx.stroke();
+      }
     }
 
     // Base/foundation
-    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillStyle = '#666';
     ctx.fillRect(-2, -2, b.w + 4, 4);
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(-2, 0, b.w + 4, 2);
 
     ctx.restore();
   }
@@ -627,71 +745,163 @@
     var sy = player.y - camY;
     var r = player.r;
 
-    // Hole shadow
     ctx.save();
+
+    // Outer cracked earth rim
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 4, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.arc(sx, sy, r + 8, 0, Math.PI * 2);
+    var rimGrad = ctx.createRadialGradient(sx, sy, r - 2, sx, sy, r + 8);
+    rimGrad.addColorStop(0, 'rgba(60,40,20,0.6)');
+    rimGrad.addColorStop(0.5, 'rgba(80,60,30,0.3)');
+    rimGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = rimGrad;
     ctx.fill();
 
-    // Main hole
+    // Crack lines radiating outward
+    ctx.strokeStyle = 'rgba(40,30,15,0.4)';
+    ctx.lineWidth = 1;
+    for (var c = 0; c < 12; c++) {
+      var ca = (Math.PI * 2 / 12) * c + bladeAngle * 0.02;
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(ca) * r * 0.95, sy + Math.sin(ca) * r * 0.95);
+      ctx.lineTo(sx + Math.cos(ca) * (r + 6 + Math.sin(c * 3) * 3), sy + Math.sin(ca) * (r + 6 + Math.sin(c * 3) * 3));
+      ctx.stroke();
+    }
+
+    // Hole shadow ring
+    ctx.beginPath();
+    ctx.arc(sx, sy, r + 3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fill();
+
+    // Main hole with deeper gradient
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    var grad = ctx.createRadialGradient(sx, sy, r * 0.05, sx, sy, r);
-    grad.addColorStop(0, '#050508');
-    grad.addColorStop(0.5, '#0a0a15');
-    grad.addColorStop(0.85, '#151525');
-    grad.addColorStop(1, '#252535');
+    var grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+    grad.addColorStop(0, '#020204');
+    grad.addColorStop(0.3, '#060610');
+    grad.addColorStop(0.6, '#0a0a18');
+    grad.addColorStop(0.85, '#141428');
+    grad.addColorStop(1, '#1e1e38');
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Spiral effect
-    ctx.strokeStyle = 'rgba(232,93,38,0.3)';
-    ctx.lineWidth = 1.5;
-    for (var s = 0; s < 3; s++) {
+    // Inner depth rings
+    for (var dr = 0; dr < 4; dr++) {
+      var ringR = r * (0.3 + dr * 0.18);
       ctx.beginPath();
-      var startA = bladeAngle + (Math.PI * 2 / 3) * s;
-      for (var a = 0; a < Math.PI * 2; a += 0.1) {
-        var spiralR = (a / (Math.PI * 2)) * r * 0.9;
+      ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(100,100,140,' + (0.06 - dr * 0.01) + ')';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Spiral vortex lines (3 spirals, 2 full rotations)
+    for (var s = 0; s < 3; s++) {
+      var startA = bladeAngle * 1.5 + (Math.PI * 2 / 3) * s;
+      ctx.beginPath();
+      for (var a = 0; a < Math.PI * 4; a += 0.08) {
+        var spiralR = (a / (Math.PI * 4)) * r * 0.88;
+        var opacity = 1 - (a / (Math.PI * 4));
         var px = sx + Math.cos(startA + a) * spiralR;
         var py = sy + Math.sin(startA + a) * spiralR;
         if (a === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
+      ctx.strokeStyle = 'rgba(232,93,38,' + 0.2 + ')';
+      ctx.lineWidth = 1.2;
       ctx.stroke();
     }
 
-    // Spinning blades
-    ctx.lineWidth = 3;
-    for (var i = 0; i < 4; i++) {
-      var a = bladeAngle + (Math.PI / 2) * i;
-      var grad2 = ctx.createLinearGradient(sx, sy, sx + Math.cos(a) * r, sy + Math.sin(a) * r);
-      grad2.addColorStop(0, 'rgba(232,93,38,0.8)');
-      grad2.addColorStop(1, 'rgba(232,93,38,0.2)');
-      ctx.strokeStyle = grad2;
+    // 6 curved blades with thickness
+    for (var i = 0; i < 6; i++) {
+      var a = bladeAngle + (Math.PI / 3) * i;
+
+      // Blade body (filled curved shape)
       ctx.beginPath();
-      ctx.moveTo(sx + Math.cos(a) * r * 0.1, sy + Math.sin(a) * r * 0.1);
+      var innerR = r * 0.12;
+      var outerR = r * 0.9;
+      // Leading edge
+      ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR);
       ctx.quadraticCurveTo(
-        sx + Math.cos(a + 0.3) * r * 0.6,
-        sy + Math.sin(a + 0.3) * r * 0.6,
-        sx + Math.cos(a) * r * 0.88,
-        sy + Math.sin(a) * r * 0.88
+        sx + Math.cos(a + 0.35) * r * 0.55,
+        sy + Math.sin(a + 0.35) * r * 0.55,
+        sx + Math.cos(a + 0.08) * outerR,
+        sy + Math.sin(a + 0.08) * outerR
       );
+      // Tip
+      ctx.lineTo(sx + Math.cos(a - 0.04) * outerR, sy + Math.sin(a - 0.04) * outerR);
+      // Trailing edge
+      ctx.quadraticCurveTo(
+        sx + Math.cos(a + 0.15) * r * 0.45,
+        sy + Math.sin(a + 0.15) * r * 0.45,
+        sx + Math.cos(a) * innerR,
+        sy + Math.sin(a) * innerR
+      );
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(200,90,30,0.5)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(232,93,38,0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Blade highlight edge
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR);
+      ctx.quadraticCurveTo(
+        sx + Math.cos(a + 0.35) * r * 0.55,
+        sy + Math.sin(a + 0.35) * r * 0.55,
+        sx + Math.cos(a + 0.08) * outerR,
+        sy + Math.sin(a + 0.08) * outerR
+      );
+      ctx.strokeStyle = 'rgba(255,160,80,0.35)';
+      ctx.lineWidth = 1;
       ctx.stroke();
     }
 
-    // Center hub
+    // Center hub - metallic look
+    var hubR = r * 0.12;
     ctx.beginPath();
-    ctx.arc(sx, sy, r * 0.08, 0, Math.PI * 2);
-    ctx.fillStyle = '#e85d26';
+    ctx.arc(sx, sy, hubR, 0, Math.PI * 2);
+    var hubGrad = ctx.createRadialGradient(sx - hubR * 0.3, sy - hubR * 0.3, 0, sx, sy, hubR);
+    hubGrad.addColorStop(0, '#ff8040');
+    hubGrad.addColorStop(0.5, '#e85d26');
+    hubGrad.addColorStop(1, '#a03010');
+    ctx.fillStyle = hubGrad;
     ctx.fill();
+    ctx.strokeStyle = 'rgba(255,200,150,0.4)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
 
-    // Edge glow
+    // Hub bolt dots
+    for (var b = 0; b < 4; b++) {
+      var ba = bladeAngle * 0.5 + (Math.PI / 2) * b;
+      ctx.beginPath();
+      ctx.arc(sx + Math.cos(ba) * hubR * 0.6, sy + Math.sin(ba) * hubR * 0.6, 1.2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fill();
+    }
+
+    // Outer edge - ground lip with texture
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(232,93,38,0.25)';
-    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = '#3a3020';
+    ctx.lineWidth = 3;
     ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(232,93,38,0.2)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Subtle inner glow
+    ctx.beginPath();
+    ctx.arc(sx, sy, r * 0.6, 0, Math.PI * 2);
+    var glowGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 0.6);
+    glowGrad.addColorStop(0, 'rgba(232,93,38,0.06)');
+    glowGrad.addColorStop(1, 'rgba(232,93,38,0)');
+    ctx.fillStyle = glowGrad;
+    ctx.fill();
 
     ctx.restore();
   }
