@@ -9,22 +9,45 @@
   html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; touch-action: none; }
   canvas { display: block; }
   #ui {
-    position: fixed; top: 0; left: 0; right: 0; padding: 16px 20px;
+    position: fixed; top: 0; left: 0; right: 0; padding: 14px 20px;
     display: flex; justify-content: space-between; align-items: center;
     z-index: 10; pointer-events: none;
   }
-  #score, #level-label {
-    font-family: 'Helvetica Neue', sans-serif; font-weight: 800;
-    font-size: 22px; color: white; text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  .ui-box {
+    background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border-radius: 10px; padding: 8px 16px;
+    font-family: 'Helvetica Neue', sans-serif; font-weight: 700;
+    font-size: 16px; color: white;
+  }
+  .ui-box small { font-size: 10px; font-weight: 500; color: rgba(255,255,255,0.5); display: block; }
+  #size-indicator {
+    position: fixed; top: 60px; left: 20px; z-index: 10; pointer-events: none;
+  }
+  #size-bar-wrap {
+    width: 120px; height: 6px; background: rgba(255,255,255,0.1);
+    border-radius: 3px; overflow: hidden;
+  }
+  #size-bar {
+    height: 100%; width: 20%; border-radius: 3px; transition: width 0.3s, background 0.3s;
+    background: linear-gradient(90deg, #4ecdc4, #2E9ED6);
+  }
+  #size-label {
+    font-family: 'Helvetica Neue', sans-serif; font-size: 10px;
+    color: rgba(255,255,255,0.4); margin-bottom: 4px;
   }
   #progress-wrap {
     position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
-    width: 200px; height: 8px; background: rgba(255,255,255,0.15);
-    border-radius: 4px; z-index: 10; pointer-events: none;
+    width: 180px; height: 6px; background: rgba(255,255,255,0.1);
+    border-radius: 3px; z-index: 10; pointer-events: none; overflow: hidden;
   }
   #progress-bar {
     height: 100%; width: 0%; background: linear-gradient(90deg, #e85d26, #ff9a56);
-    border-radius: 4px; transition: width 0.3s;
+    border-radius: 3px; transition: width 0.3s;
+  }
+  #progress-label {
+    position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+    font-family: 'Helvetica Neue', sans-serif; font-size: 10px;
+    color: rgba(255,255,255,0.35); z-index: 10; pointer-events: none;
   }
   #start-screen, #level-screen {
     position: fixed; inset: 0; z-index: 20;
@@ -35,19 +58,28 @@
   #level-screen { display: none; }
   .title { font-size: 52px; font-weight: 900; letter-spacing: -2px; margin-bottom: 8px; }
   .title span { color: #e85d26; }
-  .subtitle { font-size: 16px; color: rgba(255,255,255,0.4); margin-bottom: 40px; }
+  .subtitle { font-size: 15px; color: rgba(255,255,255,0.35); margin-bottom: 40px; }
   .btn {
-    padding: 16px 48px; background: #e85d26; color: white; border: none;
-    border-radius: 12px; font-size: 18px; font-weight: 700; cursor: pointer;
+    padding: 16px 52px; background: #e85d26; color: white; border: none;
+    border-radius: 14px; font-size: 18px; font-weight: 700; cursor: pointer;
     font-family: 'Helvetica Neue', sans-serif; touch-action: manipulation;
+    box-shadow: 0 4px 20px rgba(232,93,38,0.4);
   }
   .btn:active { transform: scale(0.95); }
-  .level-title { font-size: 36px; font-weight: 800; margin-bottom: 12px; }
-  .level-sub { font-size: 14px; color: rgba(255,255,255,0.4); margin-bottom: 30px; }
+  .level-title { font-size: 40px; font-weight: 800; margin-bottom: 8px; }
+  .level-sub { font-size: 14px; color: rgba(255,255,255,0.35); margin-bottom: 32px; }
   #blender-icon {
     width: 80px; height: 80px; border-radius: 50%;
     background: radial-gradient(circle, #0a0a1a 30%, #e85d26 70%, transparent 72%);
-    margin-bottom: 24px; box-shadow: 0 0 30px rgba(232,93,38,0.3);
+    margin-bottom: 24px; box-shadow: 0 0 40px rgba(232,93,38,0.25);
+  }
+  #too-small {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-family: 'Helvetica Neue', sans-serif; font-size: 14px; font-weight: 600;
+    color: #ff6b6b; z-index: 10; pointer-events: none;
+    opacity: 0; transition: opacity 0.3s;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0.4); padding: 8px 18px; border-radius: 8px;
   }
 </style>
 </head>
@@ -56,21 +88,27 @@
 <div id="start-screen">
   <div id="blender-icon"></div>
   <div class="title"><span>B</span>LENDER</div>
-  <div class="subtitle">Devour everything in your path</div>
+  <div class="subtitle">Devour the city block by block</div>
   <button class="btn" id="start-btn">PLAY</button>
 </div>
 
 <div id="level-screen">
   <div class="level-title" id="level-title">Level 1</div>
-  <div class="level-sub" id="level-sub">Eat all the towers!</div>
+  <div class="level-sub" id="level-sub">Clear the city!</div>
   <button class="btn" id="level-btn">GO</button>
 </div>
 
 <div id="ui">
-  <div id="score">0</div>
-  <div id="level-label">Level 1</div>
+  <div class="ui-box"><small>SCORE</small><span id="score">0</span></div>
+  <div class="ui-box"><small>LEVEL</small><span id="level-label">1</span></div>
 </div>
+<div id="size-indicator">
+  <div id="size-label">BLENDER SIZE</div>
+  <div id="size-bar-wrap"><div id="size-bar"></div></div>
+</div>
+<div id="progress-label">BUILDINGS REMAINING</div>
 <div id="progress-wrap"><div id="progress-bar"></div></div>
+<div id="too-small">Too small! Eat smaller buildings first</div>
 
 <canvas id="game"></canvas>
 
@@ -79,221 +117,509 @@
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d');
   var W, H;
-
-  // Game state
-  var player, towers, particles, eaten, totalTowers, level, score, gameRunning;
+  var player, buildings, trees, particles, eaten, totalBuildings, level, score, gameRunning;
   var worldW, worldH, camX, camY;
   var touchStartX, touchStartY, touchX, touchY, touching;
   var bladeAngle = 0;
+  var tooSmallTimer = 0;
+  var maxBuildingW = 0;
 
-  function resize() {
-    W = canvas.width = window.innerWidth;
-    H = canvas.height = window.innerHeight;
-  }
+  function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
   window.addEventListener('resize', resize);
   resize();
 
-  // Colors for towers
-  var COLORS = [
-    '#e85d26','#2E9ED6','#4ecdc4','#ffe66d','#ff6b6b',
-    '#a8e6cf','#dda0dd','#98d8c8','#f7dc6f','#bb8fce'
+  // Building color palettes (wall, accent, roof)
+  var PALETTES = [
+    { wall: '#8b9dad', accent: '#6b7d8d', roof: '#5a6a7a', win: '#ffe8a0' },  // grey office
+    { wall: '#c4956a', accent: '#a07850', roof: '#7a5a3a', win: '#fff4c0' },  // brown brick
+    { wall: '#a0b8c8', accent: '#7a98b0', roof: '#5a7890', win: '#ffeaa0' },  // blue glass
+    { wall: '#d4a0a0', accent: '#b48080', roof: '#8a5a5a', win: '#fff0c0' },  // red brick
+    { wall: '#b0c4a0', accent: '#90a480', roof: '#6a8460', win: '#fffff0' },  // green
+    { wall: '#c8b8d0', accent: '#a898b0', roof: '#887898', win: '#fffae0' },  // purple
+    { wall: '#e0d0b0', accent: '#c0b090', roof: '#a09070', win: '#fff8d0' },  // tan
+    { wall: '#90b0c8', accent: '#7090a8', roof: '#506878', win: '#ffeeaa' },  // steel blue
   ];
+
+  // Building types
+  var TYPES = ['house', 'office', 'skyscraper', 'shop', 'apartment'];
+
+  function makeBuilding(x, y, sizeClass) {
+    var pal = PALETTES[Math.floor(Math.random() * PALETTES.length)];
+    var type, bw, bh, floors;
+
+    if (sizeClass === 0) { // tiny - houses & shops
+      type = Math.random() > 0.5 ? 'house' : 'shop';
+      bw = 22 + Math.random() * 14;
+      bh = 25 + Math.random() * 20;
+      floors = 1;
+    } else if (sizeClass === 1) { // small
+      type = Math.random() > 0.5 ? 'shop' : 'apartment';
+      bw = 28 + Math.random() * 16;
+      bh = 40 + Math.random() * 30;
+      floors = 2 + Math.floor(Math.random() * 2);
+    } else if (sizeClass === 2) { // medium
+      type = 'apartment';
+      bw = 35 + Math.random() * 20;
+      bh = 60 + Math.random() * 40;
+      floors = 3 + Math.floor(Math.random() * 3);
+    } else if (sizeClass === 3) { // large
+      type = 'office';
+      bw = 45 + Math.random() * 25;
+      bh = 90 + Math.random() * 50;
+      floors = 5 + Math.floor(Math.random() * 4);
+    } else { // huge skyscraper
+      type = 'skyscraper';
+      bw = 50 + Math.random() * 35;
+      bh = 140 + Math.random() * 80;
+      floors = 8 + Math.floor(Math.random() * 8);
+    }
+
+    // Windows per floor
+    var winsPerFloor = Math.max(1, Math.floor(bw / 12));
+    var floorH = bh / floors;
+
+    // Roof style
+    var roofType = type === 'house' ? 'peaked' : (type === 'skyscraper' ? 'antenna' : (Math.random() > 0.5 ? 'flat' : 'ledge'));
+
+    // Has door
+    var doorW = Math.min(bw * 0.25, 10);
+    var doorH = Math.min(floorH * 0.6, 16);
+
+    return {
+      x: x, y: y, w: bw, h: bh, type: type, pal: pal,
+      floors: floors, floorH: floorH, winsPerFloor: winsPerFloor,
+      roofType: roofType, doorW: doorW, doorH: doorH,
+      sizeClass: sizeClass,
+      falling: false, fallProgress: 0, fallDir: 0,
+      absorbed: false,
+      shake: 0, shakeAmount: 0
+    };
+  }
 
   function initLevel(lvl) {
     level = lvl;
-    worldW = 1600 + lvl * 200;
-    worldH = 1600 + lvl * 200;
-    player = { x: worldW / 2, y: worldH / 2, r: 30 + lvl * 2, baseR: 30 + lvl * 2 };
-    towers = [];
+    worldW = 2000 + lvl * 300;
+    worldH = 2000 + lvl * 300;
+    player = { x: worldW / 2, y: worldH / 2, r: 25, startR: 25 };
+    buildings = [];
+    trees = [];
     particles = [];
     eaten = 0;
-    totalTowers = 15 + lvl * 8;
+    maxBuildingW = 0;
 
-    for (var i = 0; i < totalTowers; i++) {
-      var tw = 20 + Math.random() * 30;
-      var th = 30 + Math.random() * 80 + lvl * 5;
-      var blocks = 2 + Math.floor(Math.random() * 4);
-      var towerBlocks = [];
-      var blockH = th / blocks;
-      for (var b = 0; b < blocks; b++) {
-        towerBlocks.push({ color: COLORS[Math.floor(Math.random() * COLORS.length)], h: blockH });
+    // Create city blocks with roads
+    var blockSize = 200;
+    var roadW = 40;
+    var cols = Math.floor(worldW / (blockSize + roadW));
+    var rows = Math.floor(worldH / (blockSize + roadW));
+
+    // Determine building distribution based on level
+    // More big buildings in later levels
+    var sizeWeights;
+    if (lvl <= 2) sizeWeights = [0.35, 0.30, 0.20, 0.10, 0.05];
+    else if (lvl <= 4) sizeWeights = [0.20, 0.25, 0.25, 0.20, 0.10];
+    else sizeWeights = [0.10, 0.15, 0.25, 0.25, 0.25];
+
+    for (var col = 0; col < cols; col++) {
+      for (var row = 0; row < rows; row++) {
+        var blockX = roadW + col * (blockSize + roadW);
+        var blockY = roadW + row * (blockSize + roadW);
+
+        // Place 2-5 buildings per block
+        var numBuildings = 2 + Math.floor(Math.random() * 4);
+        for (var b = 0; b < numBuildings; b++) {
+          // Pick size class
+          var r = Math.random();
+          var cumulative = 0;
+          var sizeClass = 0;
+          for (var s = 0; s < sizeWeights.length; s++) {
+            cumulative += sizeWeights[s];
+            if (r < cumulative) { sizeClass = s; break; }
+          }
+
+          var bx = blockX + 15 + Math.random() * (blockSize - 80);
+          var by = blockY + 15 + Math.random() * (blockSize - 80);
+          var building = makeBuilding(bx, by, sizeClass);
+          buildings.push(building);
+          if (building.w > maxBuildingW) maxBuildingW = building.w;
+        }
+
+        // Add some trees in the block
+        var numTrees = Math.floor(Math.random() * 3);
+        for (var ti = 0; ti < numTrees; ti++) {
+          trees.push({
+            x: blockX + 10 + Math.random() * (blockSize - 20),
+            y: blockY + 10 + Math.random() * (blockSize - 20),
+            r: 5 + Math.random() * 6,
+            shade: Math.random() > 0.5 ? '#3a7a4a' : '#4a8a3a',
+            absorbed: false
+          });
+        }
       }
-      towers.push({
-        x: 80 + Math.random() * (worldW - 160),
-        y: 80 + Math.random() * (worldH - 160),
-        w: tw, h: th, blocks: towerBlocks,
-        falling: false, fallProgress: 0, fallAngle: 0, fallDir: 0,
-        absorbed: false, absorbProgress: 0,
-        size: tw * th // for size gating
-      });
     }
-    // Sort so smaller towers have lower size value
-    towers.sort(function(a, b) { return a.size - b.size; });
 
+    totalBuildings = buildings.length;
     document.getElementById('score').textContent = score;
-    document.getElementById('level-label').textContent = 'Level ' + level;
+    document.getElementById('level-label').textContent = level;
+    updateSizeBar();
   }
 
-  // Input handling
-  touching = false;
-  touchX = 0; touchY = 0;
+  function updateSizeBar() {
+    var pct = Math.min(100, ((player.r - player.startR) / (maxBuildingW * 0.8)) * 100 + 15);
+    document.getElementById('size-bar').style.width = pct + '%';
+  }
 
-  canvas.addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    touching = true;
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-    touchX = touchStartX;
-    touchY = touchStartY;
-  });
-  canvas.addEventListener('touchmove', function(e) {
-    e.preventDefault();
-    touchX = e.touches[0].clientX;
-    touchY = e.touches[0].clientY;
-  });
-  canvas.addEventListener('touchend', function(e) {
-    e.preventDefault();
-    touching = false;
-  });
-
-  // Mouse fallback
+  // Input
+  touching = false; touchX = 0; touchY = 0;
+  canvas.addEventListener('touchstart', function(e) { e.preventDefault(); touching = true; touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY; touchX = touchStartX; touchY = touchStartY; });
+  canvas.addEventListener('touchmove', function(e) { e.preventDefault(); touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; });
+  canvas.addEventListener('touchend', function(e) { e.preventDefault(); touching = false; });
   var mouseDown = false;
-  canvas.addEventListener('mousedown', function(e) {
-    mouseDown = true;
-    touchStartX = e.clientX;
-    touchStartY = e.clientY;
-    touchX = e.clientX;
-    touchY = e.clientY;
-    touching = true;
-  });
-  canvas.addEventListener('mousemove', function(e) {
-    if (mouseDown) {
-      touchX = e.clientX;
-      touchY = e.clientY;
-    }
-  });
-  canvas.addEventListener('mouseup', function() {
-    mouseDown = false;
-    touching = false;
-  });
+  canvas.addEventListener('mousedown', function(e) { mouseDown = true; touchStartX = e.clientX; touchStartY = e.clientY; touchX = e.clientX; touchY = e.clientY; touching = true; });
+  canvas.addEventListener('mousemove', function(e) { if (mouseDown) { touchX = e.clientX; touchY = e.clientY; } });
+  canvas.addEventListener('mouseup', function() { mouseDown = false; touching = false; });
 
   function spawnParticles(x, y, color, count) {
     for (var i = 0; i < count; i++) {
-      var angle = Math.random() * Math.PI * 2;
-      var speed = 1 + Math.random() * 3;
-      particles.push({
-        x: x, y: y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        r: 2 + Math.random() * 3,
-        color: color,
-        life: 1
-      });
+      var a = Math.random() * Math.PI * 2;
+      var sp = 1 + Math.random() * 4;
+      particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 2 + Math.random() * 4, color: color, life: 1 });
+    }
+  }
+
+  function spawnDebris(x, y, w, pal, count) {
+    for (var i = 0; i < count; i++) {
+      var a = Math.random() * Math.PI * 2;
+      var sp = 2 + Math.random() * 5;
+      var colors = [pal.wall, pal.accent, pal.roof, '#888'];
+      particles.push({ x: x + Math.random() * w, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2, r: 2 + Math.random() * 5, color: colors[Math.floor(Math.random() * colors.length)], life: 1, gravity: true });
     }
   }
 
   function update() {
     if (!gameRunning) return;
 
-    // Move player via joystick-style drag
     if (touching) {
       var dx = touchX - touchStartX;
       var dy = touchY - touchStartY;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > 5) {
-        var speed = Math.min(dist * 0.06, 5);
+        var speed = Math.min(dist * 0.07, 6);
         player.x += (dx / dist) * speed;
         player.y += (dy / dist) * speed;
       }
     }
 
-    // Clamp to world
     player.x = Math.max(player.r, Math.min(worldW - player.r, player.x));
     player.y = Math.max(player.r, Math.min(worldH - player.r, player.y));
-
-    // Blade rotation
     bladeAngle += 0.08;
 
-    // Camera
     camX = player.x - W / 2;
     camY = player.y - H / 2;
     camX = Math.max(0, Math.min(worldW - W, camX));
     camY = Math.max(0, Math.min(worldH - H, camY));
 
-    // Check tower collisions
-    for (var i = towers.length - 1; i >= 0; i--) {
-      var t = towers[i];
-      if (t.absorbed) continue;
+    // Eat trees
+    for (var i = trees.length - 1; i >= 0; i--) {
+      var tr = trees[i];
+      if (tr.absorbed) continue;
+      if (player.r < tr.r * 1.5) continue;
+      var dx = tr.x - player.x;
+      var dy = tr.y - player.y;
+      if (Math.sqrt(dx * dx + dy * dy) < player.r) {
+        tr.absorbed = true;
+        player.r += 0.5;
+        spawnParticles(tr.x, tr.y, tr.shade, 4);
+      }
+    }
 
-      // Can we eat this tower? Only if blender is big enough relative to tower width
-      var canEat = player.r * 2 > t.w * 0.8;
+    // Check building collisions
+    var showTooSmall = false;
+    for (var i = buildings.length - 1; i >= 0; i--) {
+      var b = buildings[i];
+      if (b.absorbed) continue;
 
-      if (!t.falling && canEat) {
-        var dx = (t.x + t.w / 2) - player.x;
-        var dy = (t.y + t.w / 2) - player.y;
-        var dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < player.r + t.w * 0.3) {
-          t.falling = true;
-          t.fallDir = Math.atan2(dy, dx);
+      var canEat = player.r * 2 > b.w * 0.9;
+      var cx = b.x + b.w / 2;
+      var cy = b.y + b.w / 2;
+      var dx = cx - player.x;
+      var dy = cy - player.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var touchDist = player.r + b.w * 0.3;
+
+      if (!b.falling && dist < touchDist) {
+        if (canEat) {
+          b.falling = true;
+          b.fallDir = Math.atan2(dy, dx);
+          spawnDebris(b.x, b.y, b.w, b.pal, 10 + b.sizeClass * 4);
+        } else {
+          // Bump — too small
+          b.shake = 10;
+          b.shakeAmount = 3;
+          showTooSmall = true;
+          tooSmallTimer = 60;
         }
       }
 
-      if (t.falling && !t.absorbed) {
-        t.fallProgress += 0.03;
-        if (t.fallProgress >= 1) {
-          t.absorbed = true;
+      if (b.shake > 0) b.shake--;
+
+      if (b.falling && !b.absorbed) {
+        b.fallProgress += 0.035;
+        if (b.fallProgress >= 1) {
+          b.absorbed = true;
           eaten++;
-          score += Math.floor(t.h * t.w / 10);
-          // Grow the blender
-          player.r += t.w * 0.15;
+          score += Math.floor(b.h * b.w / 8) * (b.sizeClass + 1);
+          player.r += b.w * 0.12 + b.sizeClass * 1.5;
           document.getElementById('score').textContent = score;
-          spawnParticles(t.x + t.w / 2, t.y + t.w / 2, t.blocks[0].color, 8);
+          updateSizeBar();
+          spawnDebris(b.x, b.y, b.w, b.pal, 6);
         }
       }
     }
 
-    // Update particles
+    if (tooSmallTimer > 0) {
+      tooSmallTimer--;
+      document.getElementById('too-small').style.opacity = tooSmallTimer > 0 ? '1' : '0';
+    }
+
+    // Particles
     for (var i = particles.length - 1; i >= 0; i--) {
       var p = particles[i];
       p.x += p.vx;
       p.y += p.vy;
-      p.life -= 0.025;
+      if (p.gravity) p.vy += 0.15;
+      p.life -= 0.02;
       if (p.life <= 0) particles.splice(i, 1);
     }
 
-    // Progress bar
-    var pct = totalTowers > 0 ? (eaten / totalTowers) * 100 : 0;
+    var pct = totalBuildings > 0 ? (eaten / totalBuildings) * 100 : 0;
     document.getElementById('progress-bar').style.width = pct + '%';
 
-    // Level complete
-    if (eaten >= totalTowers) {
+    if (eaten >= totalBuildings) {
       gameRunning = false;
-      setTimeout(function() { showLevelScreen(level + 1); }, 500);
+      setTimeout(function() { showLevelScreen(level + 1); }, 600);
     }
   }
 
   function drawGround() {
-    // Ground
-    ctx.fillStyle = '#2a3a4a';
+    // Grass base
+    ctx.fillStyle = '#4a7a3a';
     ctx.fillRect(0, 0, W, H);
 
-    // Grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-    ctx.lineWidth = 1;
-    var gridSize = 60;
-    var startX = -(camX % gridSize);
-    var startY = -(camY % gridSize);
-    for (var x = startX; x < W; x += gridSize) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    var roadW = 40;
+    var blockSize = 200;
+    var cols = Math.floor(worldW / (blockSize + roadW)) + 1;
+    var rows = Math.floor(worldH / (blockSize + roadW)) + 1;
+
+    // Draw roads
+    ctx.fillStyle = '#555';
+    for (var col = 0; col <= cols; col++) {
+      var rx = col * (blockSize + roadW) - camX;
+      ctx.fillRect(rx, -camY, roadW, worldH);
+      // Center line
+      ctx.strokeStyle = '#ee0';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([12, 8]);
+      ctx.beginPath();
+      ctx.moveTo(rx + roadW / 2, -camY);
+      ctx.lineTo(rx + roadW / 2, worldH - camY);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
-    for (var y = startY; y < H; y += gridSize) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    for (var row = 0; row <= rows; row++) {
+      var ry = row * (blockSize + roadW) - camY;
+      ctx.fillRect(-camX, ry, worldW, roadW);
+      ctx.strokeStyle = '#ee0';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([12, 8]);
+      ctx.beginPath();
+      ctx.moveTo(-camX, ry + roadW / 2);
+      ctx.lineTo(worldW - camX, ry + roadW / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
-    // World border
-    ctx.strokeStyle = 'rgba(232,93,38,0.3)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(-camX, -camY, worldW, worldH);
+    // Sidewalks along roads
+    ctx.fillStyle = '#999';
+    for (var col = 0; col <= cols; col++) {
+      var rx = col * (blockSize + roadW) - camX;
+      ctx.fillRect(rx - 4, -camY, 4, worldH);
+      ctx.fillRect(rx + roadW, -camY, 4, worldH);
+    }
+    for (var row = 0; row <= rows; row++) {
+      var ry = row * (blockSize + roadW) - camY;
+      ctx.fillRect(-camX, ry - 4, worldW, 4);
+      ctx.fillRect(-camX, ry + roadW, worldW, 4);
+    }
+  }
+
+  function drawTree(t) {
+    if (t.absorbed) return;
+    var sx = t.x - camX;
+    var sy = t.y - camY;
+    if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) return;
+
+    // Trunk
+    ctx.fillStyle = '#8B6914';
+    ctx.fillRect(sx - 2, sy - 2, 4, 6);
+    // Canopy
+    ctx.fillStyle = t.shade;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 4, t.r, 0, Math.PI * 2);
+    ctx.fill();
+    // Highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.beginPath();
+    ctx.arc(sx - t.r * 0.25, sy - 4 - t.r * 0.25, t.r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBuilding(b) {
+    if (b.absorbed) return;
+    var sx = b.x - camX;
+    var sy = b.y - camY;
+    if (sx + b.w < -60 || sx > W + 60 || sy - b.h < -60 || sy > H + 60) return;
+
+    var canEat = player.r * 2 > b.w * 0.9;
+
+    ctx.save();
+
+    // Shake
+    var shakeX = 0;
+    if (b.shake > 0) shakeX = Math.sin(b.shake * 2) * b.shakeAmount;
+
+    if (b.falling) {
+      var p = b.fallProgress;
+      var scale = 1 - p;
+      var moveX = (player.x - camX - sx - b.w / 2) * p;
+      var moveY = (player.y - camY - sy) * p;
+      ctx.translate(sx + b.w / 2 + moveX, sy + moveY);
+      ctx.rotate(p * 3 * (b.fallDir > 0 ? 1 : -1));
+      ctx.scale(scale, scale);
+      ctx.translate(-b.w / 2, 0);
+      ctx.globalAlpha = 1 - p * 0.6;
+    } else {
+      ctx.translate(sx + shakeX, sy);
+    }
+
+    // Shadow on ground
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.beginPath();
+    ctx.ellipse(b.w / 2, 6, b.w * 0.6, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Main building body (drawn upward from base)
+    // Side face (3D effect)
+    var depth = 6;
+    ctx.fillStyle = b.pal.accent;
+    ctx.beginPath();
+    ctx.moveTo(b.w, 0);
+    ctx.lineTo(b.w + depth, -depth);
+    ctx.lineTo(b.w + depth, -b.h - depth);
+    ctx.lineTo(b.w, -b.h);
+    ctx.closePath();
+    ctx.fill();
+
+    // Top face
+    ctx.fillStyle = b.pal.roof;
+    ctx.beginPath();
+    ctx.moveTo(0, -b.h);
+    ctx.lineTo(depth, -b.h - depth);
+    ctx.lineTo(b.w + depth, -b.h - depth);
+    ctx.lineTo(b.w, -b.h);
+    ctx.closePath();
+    ctx.fill();
+
+    // Front face
+    ctx.fillStyle = b.pal.wall;
+    ctx.fillRect(0, -b.h, b.w, b.h);
+
+    // Floor lines
+    for (var f = 0; f < b.floors; f++) {
+      var fy = -b.floorH * f;
+      ctx.fillStyle = 'rgba(0,0,0,0.06)';
+      ctx.fillRect(0, fy - 1, b.w, 1);
+    }
+
+    // Windows
+    var winW = 5;
+    var winH = 6;
+    var winGap = (b.w - 6) / b.winsPerFloor;
+    for (var f = 0; f < b.floors; f++) {
+      var fy = -b.floorH * f - b.floorH * 0.4;
+      for (var wi = 0; wi < b.winsPerFloor; wi++) {
+        var wx = 5 + wi * winGap;
+        // Window frame
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.fillRect(wx - 1, fy - winH - 1, winW + 2, winH + 2);
+        // Window glass - lit or dark
+        var lit = Math.random() > 0.3;
+        ctx.fillStyle = lit ? b.pal.win : 'rgba(40,60,80,0.8)';
+        ctx.fillRect(wx, fy - winH, winW, winH);
+        // Window glare
+        if (lit) {
+          ctx.fillStyle = 'rgba(255,255,255,0.25)';
+          ctx.fillRect(wx, fy - winH, winW * 0.4, winH * 0.4);
+        }
+      }
+    }
+
+    // Door (ground floor)
+    ctx.fillStyle = '#4a3020';
+    var doorX = b.w / 2 - b.doorW / 2;
+    ctx.fillRect(doorX, -b.doorH, b.doorW, b.doorH);
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.fillRect(doorX + 1, -b.doorH + 1, b.doorW - 2, b.doorH * 0.4);
+    // Door knob
+    ctx.fillStyle = '#c0a040';
+    ctx.beginPath();
+    ctx.arc(doorX + b.doorW * 0.75, -b.doorH * 0.4, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Roof details
+    if (b.roofType === 'peaked') {
+      ctx.fillStyle = b.pal.roof;
+      ctx.beginPath();
+      ctx.moveTo(-2, -b.h);
+      ctx.lineTo(b.w / 2, -b.h - 15);
+      ctx.lineTo(b.w + 2, -b.h);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath();
+      ctx.moveTo(-2, -b.h);
+      ctx.lineTo(b.w / 2, -b.h - 15);
+      ctx.lineTo(b.w / 2, -b.h);
+      ctx.closePath();
+      ctx.fill();
+    } else if (b.roofType === 'antenna') {
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(b.w / 2, -b.h);
+      ctx.lineTo(b.w / 2, -b.h - 20);
+      ctx.stroke();
+      // Blinking light
+      ctx.fillStyle = Math.sin(Date.now() * 0.005) > 0 ? '#ff3030' : '#801010';
+      ctx.beginPath();
+      ctx.arc(b.w / 2, -b.h - 20, 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (b.roofType === 'ledge') {
+      ctx.fillStyle = b.pal.accent;
+      ctx.fillRect(-3, -b.h - 4, b.w + 6, 5);
+    }
+
+    // Too-big indicator: red tint if can't eat
+    if (!canEat && !b.falling) {
+      ctx.fillStyle = 'rgba(255,50,50,0.08)';
+      ctx.fillRect(0, -b.h, b.w, b.h);
+    }
+
+    // Base/foundation
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(-2, -2, b.w + 4, 4);
+
+    ctx.restore();
   }
 
   function drawBlender() {
@@ -301,109 +627,73 @@
     var sy = player.y - camY;
     var r = player.r;
 
-    // Shadow / hole
+    // Hole shadow
     ctx.save();
     ctx.beginPath();
+    ctx.arc(sx, sy, r + 4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fill();
+
+    // Main hole
+    ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    var grad = ctx.createRadialGradient(sx, sy, r * 0.1, sx, sy, r);
-    grad.addColorStop(0, '#0a0a12');
-    grad.addColorStop(0.7, '#12121f');
-    grad.addColorStop(1, '#1a1a2e');
+    var grad = ctx.createRadialGradient(sx, sy, r * 0.05, sx, sy, r);
+    grad.addColorStop(0, '#050508');
+    grad.addColorStop(0.5, '#0a0a15');
+    grad.addColorStop(0.85, '#151525');
+    grad.addColorStop(1, '#252535');
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Spinning blades
-    ctx.strokeStyle = 'rgba(232,93,38,0.7)';
-    ctx.lineWidth = 2.5;
-    for (var i = 0; i < 4; i++) {
-      var a = bladeAngle + (Math.PI / 2) * i;
+    // Spiral effect
+    ctx.strokeStyle = 'rgba(232,93,38,0.3)';
+    ctx.lineWidth = 1.5;
+    for (var s = 0; s < 3; s++) {
       ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      var bx = sx + Math.cos(a) * r * 0.85;
-      var by = sy + Math.sin(a) * r * 0.85;
-      ctx.lineTo(bx, by);
-      // Curved blade tip
-      var tipA = a + 0.4;
-      var tx = sx + Math.cos(tipA) * r * 0.6;
-      var ty = sy + Math.sin(tipA) * r * 0.6;
-      ctx.lineTo(tx, ty);
+      var startA = bladeAngle + (Math.PI * 2 / 3) * s;
+      for (var a = 0; a < Math.PI * 2; a += 0.1) {
+        var spiralR = (a / (Math.PI * 2)) * r * 0.9;
+        var px = sx + Math.cos(startA + a) * spiralR;
+        var py = sy + Math.sin(startA + a) * spiralR;
+        if (a === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
       ctx.stroke();
     }
 
-    // Inner ring
-    ctx.beginPath();
-    ctx.arc(sx, sy, r * 0.2, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(232,93,38,0.5)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    // Spinning blades
+    ctx.lineWidth = 3;
+    for (var i = 0; i < 4; i++) {
+      var a = bladeAngle + (Math.PI / 2) * i;
+      var grad2 = ctx.createLinearGradient(sx, sy, sx + Math.cos(a) * r, sy + Math.sin(a) * r);
+      grad2.addColorStop(0, 'rgba(232,93,38,0.8)');
+      grad2.addColorStop(1, 'rgba(232,93,38,0.2)');
+      ctx.strokeStyle = grad2;
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(a) * r * 0.1, sy + Math.sin(a) * r * 0.1);
+      ctx.quadraticCurveTo(
+        sx + Math.cos(a + 0.3) * r * 0.6,
+        sy + Math.sin(a + 0.3) * r * 0.6,
+        sx + Math.cos(a) * r * 0.88,
+        sy + Math.sin(a) * r * 0.88
+      );
+      ctx.stroke();
+    }
 
-    // Outer ring glow
+    // Center hub
+    ctx.beginPath();
+    ctx.arc(sx, sy, r * 0.08, 0, Math.PI * 2);
+    ctx.fillStyle = '#e85d26';
+    ctx.fill();
+
+    // Edge glow
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(232,93,38,0.35)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(232,93,38,0.25)';
+    ctx.lineWidth = 2.5;
     ctx.stroke();
 
     ctx.restore();
-  }
-
-  function drawTowers() {
-    // Sort by y for depth
-    var sorted = towers.filter(function(t) { return !t.absorbed; });
-    sorted.sort(function(a, b) { return a.y - b.y; });
-
-    for (var i = 0; i < sorted.length; i++) {
-      var t = sorted[i];
-      var sx = t.x - camX;
-      var sy = t.y - camY;
-
-      // Skip if off screen
-      if (sx + t.w < -50 || sx > W + 50 || sy + t.h < -50 || sy > H + 50) continue;
-
-      ctx.save();
-
-      if (t.falling) {
-        // Falling/shrinking into the blender
-        var progress = t.fallProgress;
-        var scale = 1 - progress;
-        var moveX = (player.x - camX - sx - t.w / 2) * progress;
-        var moveY = (player.y - camY - sy) * progress;
-        ctx.translate(sx + t.w / 2 + moveX, sy + moveY);
-        ctx.rotate(progress * t.fallDir * 2);
-        ctx.scale(scale, scale);
-        ctx.translate(-t.w / 2, 0);
-        ctx.globalAlpha = 1 - progress * 0.5;
-      } else {
-        ctx.translate(sx, sy);
-      }
-
-      // Draw shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.2)';
-      ctx.beginPath();
-      ctx.ellipse(t.w / 2, t.h + 4, t.w * 0.6, 6, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Draw stacked blocks
-      var yOff = t.h;
-      for (var b = 0; b < t.blocks.length; b++) {
-        var block = t.blocks[b];
-        yOff -= block.h;
-
-        // Block face
-        ctx.fillStyle = block.color;
-        ctx.fillRect(0, yOff, t.w, block.h - 1);
-
-        // Light edge
-        ctx.fillStyle = 'rgba(255,255,255,0.15)';
-        ctx.fillRect(0, yOff, t.w, 2);
-
-        // Dark edge
-        ctx.fillStyle = 'rgba(0,0,0,0.15)';
-        ctx.fillRect(0, yOff + block.h - 3, t.w, 2);
-      }
-
-      ctx.restore();
-    }
   }
 
   function drawParticles() {
@@ -411,9 +701,14 @@
       var p = particles[i];
       ctx.globalAlpha = p.life;
       ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x - camX, p.y - camY, p.r, 0, Math.PI * 2);
-      ctx.fill();
+      var psx = p.x - camX;
+      var psy = p.y - camY;
+      // Draw as small rectangles for debris effect
+      ctx.save();
+      ctx.translate(psx, psy);
+      ctx.rotate(p.life * 5);
+      ctx.fillRect(-p.r / 2, -p.r / 2, p.r, p.r);
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
   }
@@ -421,8 +716,26 @@
   function draw() {
     ctx.clearRect(0, 0, W, H);
     drawGround();
+
+    // Draw trees
+    for (var i = 0; i < trees.length; i++) drawTree(trees[i]);
+
+    // Sort buildings by y for depth
+    var sorted = buildings.filter(function(b) { return !b.absorbed; });
+    sorted.sort(function(a, b) { return a.y - b.y; });
+
+    // Draw buildings behind player
+    for (var i = 0; i < sorted.length; i++) {
+      if (sorted[i].y < player.y) drawBuilding(sorted[i]);
+    }
+
     drawBlender();
-    drawTowers();
+
+    // Draw buildings in front of player
+    for (var i = 0; i < sorted.length; i++) {
+      if (sorted[i].y >= player.y) drawBuilding(sorted[i]);
+    }
+
     drawParticles();
   }
 
@@ -434,7 +747,7 @@
 
   function showLevelScreen(lvl) {
     document.getElementById('level-title').textContent = 'Level ' + lvl;
-    document.getElementById('level-sub').textContent = lvl > 1 ? 'Nice! Keep going!' : 'Eat all the towers!';
+    document.getElementById('level-sub').textContent = lvl > 1 ? 'City destroyed! Next district...' : 'Clear the city!';
     document.getElementById('level-screen').style.display = 'flex';
   }
 
@@ -451,7 +764,6 @@
     initLevel(level);
     gameRunning = true;
   });
-
 })();
 </script>
 </body>
