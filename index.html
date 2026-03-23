@@ -128,6 +128,11 @@
     text-shadow: 0 2px 8px rgba(0,0,0,0.5);
     background: rgba(0,0,0,0.4); padding: 8px 18px; border-radius: 8px;
   }
+  #minimap-canvas {
+    position: fixed; bottom: 50px; right: 14px; z-index: 10; pointer-events: none;
+    border-radius: 8px; border: 2px solid rgba(255,255,255,0.15);
+    background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  }
 </style>
 </head>
 <body>
@@ -178,18 +183,24 @@
 <div id="too-small">Too small! Eat smaller buildings first</div>
 
 <canvas id="game"></canvas>
+<canvas id="minimap-canvas" width="160" height="160"></canvas>
 
 <script>
 (function() {
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d');
+  var minimapCanvas = document.getElementById('minimap-canvas');
+  var minimapCtx = minimapCanvas.getContext('2d');
   var W, H;
   var player, buildings, trees, cars, people, particles, eaten, totalBuildings, level, score, gameRunning;
   var worldW, worldH, camX, camY;
+  var smoothCamX, smoothCamY; // Smooth camera positions
   var touchStartX, touchStartY, touchX, touchY, touching;
   var bladeAngle = 0;
   var tooSmallTimer = 0;
   var maxBuildingW = 0;
+  var trailPoints = []; // Ground disturbance trail
+  var playerVX = 0, playerVY = 0; // Velocity for smooth acceleration
 
   var CAR_COLORS = ['#cc3333','#3366cc','#33aa33','#eeee33','#ffffff','#222222','#cc6600','#8833aa','#cc3388','#44cccc'];
   var SKIN_COLORS = ['#f4c7a0','#d4a06a','#8d5524','#c68642','#e8b88a','#6b4423'];
@@ -201,17 +212,16 @@
 
   // Building color palettes (wall, accent, roof)
   var PALETTES = [
-    { wall: '#8b9dad', accent: '#6b7d8d', roof: '#5a6a7a', win: '#ffe8a0' },  // grey office
-    { wall: '#c4956a', accent: '#a07850', roof: '#7a5a3a', win: '#fff4c0' },  // brown brick
-    { wall: '#a0b8c8', accent: '#7a98b0', roof: '#5a7890', win: '#ffeaa0' },  // blue glass
-    { wall: '#d4a0a0', accent: '#b48080', roof: '#8a5a5a', win: '#fff0c0' },  // red brick
-    { wall: '#b0c4a0', accent: '#90a480', roof: '#6a8460', win: '#fffff0' },  // green
-    { wall: '#c8b8d0', accent: '#a898b0', roof: '#887898', win: '#fffae0' },  // purple
-    { wall: '#e0d0b0', accent: '#c0b090', roof: '#a09070', win: '#fff8d0' },  // tan
-    { wall: '#90b0c8', accent: '#7090a8', roof: '#506878', win: '#ffeeaa' },  // steel blue
+    { wall: '#8b9dad', accent: '#6b7d8d', roof: '#5a6a7a', win: '#ffe8a0' },
+    { wall: '#c4956a', accent: '#a07850', roof: '#7a5a3a', win: '#fff4c0' },
+    { wall: '#a0b8c8', accent: '#7a98b0', roof: '#5a7890', win: '#ffeaa0' },
+    { wall: '#d4a0a0', accent: '#b48080', roof: '#8a5a5a', win: '#fff0c0' },
+    { wall: '#b0c4a0', accent: '#90a480', roof: '#6a8460', win: '#fffff0' },
+    { wall: '#c8b8d0', accent: '#a898b0', roof: '#887898', win: '#fffae0' },
+    { wall: '#e0d0b0', accent: '#c0b090', roof: '#a09070', win: '#fff8d0' },
+    { wall: '#90b0c8', accent: '#7090a8', roof: '#506878', win: '#ffeeaa' },
   ];
 
-  // Building types
   var TYPES = ['house', 'office', 'skyscraper', 'shop', 'apartment'];
 
   function makeBuilding(x, y, sizeClass) {
@@ -238,18 +248,21 @@
       bw = 45 + Math.random() * 25;
       bh = 90 + Math.random() * 50;
       floors = 5 + Math.floor(Math.random() * 4);
-    } else { // huge skyscraper
+    } else if (sizeClass === 4) { // huge skyscraper - BIGGER
       type = 'skyscraper';
-      bw = 50 + Math.random() * 35;
-      bh = 140 + Math.random() * 80;
-      floors = 8 + Math.floor(Math.random() * 8);
+      bw = 60 + Math.random() * 25;
+      bh = 180 + Math.random() * 70;
+      floors = 10 + Math.floor(Math.random() * 8);
+    } else { // sizeClass 5: mega skyscrapers
+      type = 'skyscraper';
+      bw = 80 + Math.random() * 40;
+      bh = 250 + Math.random() * 150;
+      floors = 15 + Math.floor(Math.random() * 10);
     }
 
-    // Windows per floor
     var winsPerFloor = Math.max(1, Math.floor(bw / 12));
     var floorH = bh / floors;
 
-    // Pre-compute window lit states
     var windowLit = [];
     for (var wf = 0; wf < floors; wf++) {
       var row = [];
@@ -259,18 +272,14 @@
       windowLit.push(row);
     }
 
-    // Roof style
     var roofType = type === 'house' ? 'peaked' : (type === 'skyscraper' ? 'antenna' : (Math.random() > 0.5 ? 'flat' : 'ledge'));
 
-    // Has door
     var doorW = Math.min(bw * 0.25, 10);
     var doorH = Math.min(floorH * 0.6, 16);
 
-    // Awning for shops
     var hasAwning = type === 'shop' && Math.random() > 0.3;
     var awningColor = PALETTES[Math.floor(Math.random() * PALETTES.length)].wall;
 
-    // AC units for apartments/offices
     var acUnits = [];
     if ((type === 'apartment' || type === 'office') && Math.random() > 0.5) {
       var numAC = 1 + Math.floor(Math.random() * 2);
@@ -300,31 +309,35 @@
     buildings = [];
     trees = [];
     particles = [];
+    trailPoints = [];
+    playerVX = 0;
+    playerVY = 0;
     eaten = 0;
     maxBuildingW = 0;
 
-    // Create city blocks with roads
+    // Initialize smooth camera
+    smoothCamX = player.x - W / 2;
+    smoothCamY = player.y - H / 2;
+
     var blockSize = 200;
     var roadW = 40;
     var cols = Math.floor(worldW / (blockSize + roadW));
     var rows = Math.floor(worldH / (blockSize + roadW));
 
-    // Determine building distribution based on level
-    // More big buildings in later levels
+    // Building distribution: 6 size classes now (0-5)
+    // More large buildings, mega skyscrapers in later levels
     var sizeWeights;
-    if (lvl <= 2) sizeWeights = [0.35, 0.30, 0.20, 0.10, 0.05];
-    else if (lvl <= 4) sizeWeights = [0.20, 0.25, 0.25, 0.20, 0.10];
-    else sizeWeights = [0.10, 0.15, 0.25, 0.25, 0.25];
+    if (lvl <= 2) sizeWeights = [0.30, 0.25, 0.18, 0.12, 0.10, 0.05];
+    else if (lvl <= 4) sizeWeights = [0.15, 0.20, 0.22, 0.18, 0.15, 0.10];
+    else sizeWeights = [0.08, 0.12, 0.18, 0.22, 0.22, 0.18];
 
     for (var col = 0; col < cols; col++) {
       for (var row = 0; row < rows; row++) {
         var blockX = roadW + col * (blockSize + roadW);
         var blockY = roadW + row * (blockSize + roadW);
 
-        // Place 2-5 buildings per block
         var numBuildings = 2 + Math.floor(Math.random() * 4);
         for (var b = 0; b < numBuildings; b++) {
-          // Pick size class
           var r = Math.random();
           var cumulative = 0;
           var sizeClass = 0;
@@ -340,7 +353,6 @@
           if (building.w > maxBuildingW) maxBuildingW = building.w;
         }
 
-        // Add some trees in the block
         var numTrees = Math.floor(Math.random() * 3);
         for (var ti = 0; ti < numTrees; ti++) {
           trees.push({
@@ -356,12 +368,10 @@
 
     // Spawn cars on roads
     cars = [];
-    var roadW = 40;
-    var blockSize = 200;
     var numCars = 20 + lvl * 8;
     for (var ci = 0; ci < numCars; ci++) {
       var horizontal = Math.random() > 0.5;
-      var lane = Math.random() > 0.5 ? 0.3 : 0.7; // which lane
+      var lane = Math.random() > 0.5 ? 0.3 : 0.7;
       var roadIdx, rx, ry, carDir;
       if (horizontal) {
         roadIdx = Math.floor(Math.random() * (Math.floor(worldH / (blockSize + roadW)) + 1));
@@ -389,7 +399,7 @@
     for (var pi = 0; pi < numPeople; pi++) {
       var pHoriz = Math.random() > 0.5;
       var pRoadIdx, px, py, pDir, pSide;
-      pSide = Math.random() > 0.5 ? -1 : 1; // which side of road
+      pSide = Math.random() > 0.5 ? -1 : 1;
       if (pHoriz) {
         pRoadIdx = Math.floor(Math.random() * (Math.floor(worldH / (blockSize + roadW)) + 1));
         py = pRoadIdx * (blockSize + roadW) + (pSide > 0 ? roadW + 3 : -3);
@@ -448,30 +458,82 @@
     }
   }
 
+  // Calculate dynamic zoom based on blender size
+  function getZoom() {
+    var baseZoom = 1.0;
+    var growthRatio = player.r / player.startR;
+    // Gradually zoom out as blender grows; at 4x size, zoom is ~0.55
+    var zoom = baseZoom / (1 + (growthRatio - 1) * 0.15);
+    return Math.max(0.3, Math.min(1.0, zoom));
+  }
+
   function update() {
     if (!gameRunning) return;
+
+    // Smooth acceleration/deceleration
+    var accel = 0.15;
+    var friction = 0.88;
+    var maxSpeed = 3.5;
 
     if (touching) {
       var dx = touchX - touchStartX;
       var dy = touchY - touchStartY;
       var dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > 5) {
-        var speed = Math.min(dist * 0.04, 3.5);
-        player.x += (dx / dist) * speed;
-        player.y += (dy / dist) * speed;
+        var targetSpeed = Math.min(dist * 0.04, maxSpeed);
+        var ax = (dx / dist) * targetSpeed * accel;
+        var ay = (dy / dist) * targetSpeed * accel;
+        playerVX += ax;
+        playerVY += ay;
       }
     }
+
+    // Apply friction
+    playerVX *= friction;
+    playerVY *= friction;
+
+    // Clamp velocity
+    var vel = Math.sqrt(playerVX * playerVX + playerVY * playerVY);
+    if (vel > maxSpeed) {
+      playerVX = (playerVX / vel) * maxSpeed;
+      playerVY = (playerVY / vel) * maxSpeed;
+    }
+
+    player.x += playerVX;
+    player.y += playerVY;
 
     player.x = Math.max(player.r, Math.min(worldW - player.r, player.x));
     player.y = Math.max(player.r, Math.min(worldH - player.r, player.y));
     bladeAngle += 0.08;
 
-    camX = player.x - W / 2;
-    camY = player.y - H / 2;
-    camX = Math.max(0, Math.min(worldW - W, camX));
-    camY = Math.max(0, Math.min(worldH - H, camY));
+    // Add trail points when moving
+    if (vel > 0.5) {
+      trailPoints.push({ x: player.x, y: player.y, r: player.r * 0.7, life: 1.0 });
+    }
+    // Fade and remove trail points
+    for (var ti = trailPoints.length - 1; ti >= 0; ti--) {
+      trailPoints[ti].life -= 0.008;
+      if (trailPoints[ti].life <= 0) trailPoints.splice(ti, 1);
+    }
+    // Cap trail length
+    if (trailPoints.length > 200) trailPoints.splice(0, trailPoints.length - 200);
 
-    // Eat trees
+    // Smooth camera with easing (slither.io feel)
+    var zoom = getZoom();
+    var targetCamX = player.x - (W / 2) / zoom;
+    var targetCamY = player.y - (H / 2) / zoom;
+    targetCamX = Math.max(0, Math.min(worldW - W / zoom, targetCamX));
+    targetCamY = Math.max(0, Math.min(worldH - H / zoom, targetCamY));
+
+    // Smooth interpolation - camera lags behind slightly
+    var camSmooth = 0.08;
+    smoothCamX += (targetCamX - smoothCamX) * camSmooth;
+    smoothCamY += (targetCamY - smoothCamY) * camSmooth;
+
+    camX = smoothCamX;
+    camY = smoothCamY;
+
+    // Eat trees (halved growth: 0.05 -> 0.025)
     for (var i = trees.length - 1; i >= 0; i--) {
       var tr = trees[i];
       if (tr.absorbed) continue;
@@ -480,7 +542,7 @@
       var dy = tr.y - player.y;
       if (Math.sqrt(dx * dx + dy * dy) < player.r) {
         tr.absorbed = true;
-        player.r += 0.05;
+        player.r += 0.025;
         spawnParticles(tr.x, tr.y, tr.shade, 4);
       }
     }
@@ -505,7 +567,7 @@
           b.fallDir = Math.atan2(dy, dx);
           spawnDebris(b.x, b.y, b.w, b.pal, 10 + b.sizeClass * 4);
         } else {
-          // Bump — too small
+          // Bump - too small
           b.shake = 10;
           b.shakeAmount = 3;
           showTooSmall = true;
@@ -521,7 +583,8 @@
           b.absorbed = true;
           eaten++;
           score += Math.floor(b.h * b.w / 8) * (b.sizeClass + 1);
-          player.r += b.w * 0.018 + b.sizeClass * 0.2;
+          // Halved growth: b.w * 0.018 -> b.w * 0.009, sizeClass * 0.2 -> sizeClass * 0.1
+          player.r += b.w * 0.009 + b.sizeClass * 0.1;
           document.getElementById('score').textContent = score;
           updateSizeBar();
           spawnDebris(b.x, b.y, b.w, b.pal, 6);
@@ -577,6 +640,8 @@
   }
 
   function drawGround() {
+    var zoom = getZoom();
+
     // Grass base
     ctx.fillStyle = '#4a7a3a';
     ctx.fillRect(0, 0, W, H);
@@ -586,30 +651,48 @@
     var cols = Math.floor(worldW / (blockSize + roadW)) + 1;
     var rows = Math.floor(worldH / (blockSize + roadW)) + 1;
 
+    // Draw trail/disturbance on ground
+    for (var ti = 0; ti < trailPoints.length; ti++) {
+      var tp = trailPoints[ti];
+      var tsx = (tp.x - camX) * zoom;
+      var tsy = (tp.y - camY) * zoom;
+      if (tsx < -50 || tsx > W + 50 || tsy < -50 || tsy > H + 50) continue;
+      ctx.fillStyle = 'rgba(60,50,30,' + (tp.life * 0.2) + ')';
+      ctx.beginPath();
+      ctx.arc(tsx, tsy, tp.r * zoom, 0, Math.PI * 2);
+      ctx.fill();
+      // Darker crack ring
+      ctx.strokeStyle = 'rgba(40,30,15,' + (tp.life * 0.15) + ')';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(tsx, tsy, tp.r * zoom * 0.6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     // Draw roads
     ctx.fillStyle = '#555';
     for (var col = 0; col <= cols; col++) {
-      var rx = col * (blockSize + roadW) - camX;
-      ctx.fillRect(rx, -camY, roadW, worldH);
+      var rx = (col * (blockSize + roadW) - camX) * zoom;
+      ctx.fillRect(rx, -camY * zoom, roadW * zoom, worldH * zoom);
       // Center line
       ctx.strokeStyle = '#ee0';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([12, 8]);
+      ctx.lineWidth = 1.5 * zoom;
+      ctx.setLineDash([12 * zoom, 8 * zoom]);
       ctx.beginPath();
-      ctx.moveTo(rx + roadW / 2, -camY);
-      ctx.lineTo(rx + roadW / 2, worldH - camY);
+      ctx.moveTo(rx + roadW / 2 * zoom, -camY * zoom);
+      ctx.lineTo(rx + roadW / 2 * zoom, (worldH - camY) * zoom);
       ctx.stroke();
       ctx.setLineDash([]);
     }
     for (var row = 0; row <= rows; row++) {
-      var ry = row * (blockSize + roadW) - camY;
-      ctx.fillRect(-camX, ry, worldW, roadW);
+      var ry = (row * (blockSize + roadW) - camY) * zoom;
+      ctx.fillRect(-camX * zoom, ry, worldW * zoom, roadW * zoom);
       ctx.strokeStyle = '#ee0';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([12, 8]);
+      ctx.lineWidth = 1.5 * zoom;
+      ctx.setLineDash([12 * zoom, 8 * zoom]);
       ctx.beginPath();
-      ctx.moveTo(-camX, ry + roadW / 2);
-      ctx.lineTo(worldW - camX, ry + roadW / 2);
+      ctx.moveTo(-camX * zoom, ry + roadW / 2 * zoom);
+      ctx.lineTo((worldW - camX) * zoom, ry + roadW / 2 * zoom);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -617,61 +700,65 @@
     // Sidewalks along roads
     ctx.fillStyle = '#999';
     for (var col = 0; col <= cols; col++) {
-      var rx = col * (blockSize + roadW) - camX;
-      ctx.fillRect(rx - 4, -camY, 4, worldH);
-      ctx.fillRect(rx + roadW, -camY, 4, worldH);
+      var rx = (col * (blockSize + roadW) - camX) * zoom;
+      ctx.fillRect(rx - 4 * zoom, -camY * zoom, 4 * zoom, worldH * zoom);
+      ctx.fillRect(rx + roadW * zoom, -camY * zoom, 4 * zoom, worldH * zoom);
     }
     for (var row = 0; row <= rows; row++) {
-      var ry = row * (blockSize + roadW) - camY;
-      ctx.fillRect(-camX, ry - 4, worldW, 4);
-      ctx.fillRect(-camX, ry + roadW, worldW, 4);
+      var ry = (row * (blockSize + roadW) - camY) * zoom;
+      ctx.fillRect(-camX * zoom, ry - 4 * zoom, worldW * zoom, 4 * zoom);
+      ctx.fillRect(-camX * zoom, ry + roadW * zoom, worldW * zoom, 4 * zoom);
     }
   }
 
   function drawTree(t) {
     if (t.absorbed) return;
-    var sx = t.x - camX;
-    var sy = t.y - camY;
+    var zoom = getZoom();
+    var sx = (t.x - camX) * zoom;
+    var sy = (t.y - camY) * zoom;
     if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) return;
 
     // Trunk
     ctx.fillStyle = '#8B6914';
-    ctx.fillRect(sx - 2, sy - 2, 4, 6);
+    ctx.fillRect(sx - 2 * zoom, sy - 2 * zoom, 4 * zoom, 6 * zoom);
     // Canopy
     ctx.fillStyle = t.shade;
     ctx.beginPath();
-    ctx.arc(sx, sy - 4, t.r, 0, Math.PI * 2);
+    ctx.arc(sx, sy - 4 * zoom, t.r * zoom, 0, Math.PI * 2);
     ctx.fill();
     // Highlight
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
     ctx.beginPath();
-    ctx.arc(sx - t.r * 0.25, sy - 4 - t.r * 0.25, t.r * 0.5, 0, Math.PI * 2);
+    ctx.arc(sx - t.r * 0.25 * zoom, sy - (4 + t.r * 0.25) * zoom, t.r * 0.5 * zoom, 0, Math.PI * 2);
     ctx.fill();
   }
 
   function drawBuilding(b) {
     if (b.absorbed) return;
-    var sx = b.x - camX;
-    var sy = b.y - camY;
-    if (sx + b.w < -60 || sx > W + 60 || sy - b.h < -60 || sy > H + 60) return;
+    var zoom = getZoom();
+    var sx = (b.x - camX) * zoom;
+    var sy = (b.y - camY) * zoom;
+    var bw = b.w * zoom;
+    var bh = b.h * zoom;
+    var floorH = b.floorH * zoom;
+    if (sx + bw < -60 || sx > W + 60 || sy - bh < -60 || sy > H + 60) return;
 
     var canEat = player.r * 2 > b.w * 0.9;
 
     ctx.save();
 
-    // Shake
     var shakeX = 0;
-    if (b.shake > 0) shakeX = Math.sin(b.shake * 2) * b.shakeAmount;
+    if (b.shake > 0) shakeX = Math.sin(b.shake * 2) * b.shakeAmount * zoom;
 
     if (b.falling) {
       var p = b.fallProgress;
       var scale = 1 - p;
-      var moveX = (player.x - camX - sx - b.w / 2) * p;
-      var moveY = (player.y - camY - sy) * p;
-      ctx.translate(sx + b.w / 2 + moveX, sy + moveY);
+      var moveX = ((player.x - camX) * zoom - sx - bw / 2) * p;
+      var moveY = ((player.y - camY) * zoom - sy) * p;
+      ctx.translate(sx + bw / 2 + moveX, sy + moveY);
       ctx.rotate(p * 3 * (b.fallDir > 0 ? 1 : -1));
       ctx.scale(scale, scale);
-      ctx.translate(-b.w / 2, 0);
+      ctx.translate(-bw / 2, 0);
       ctx.globalAlpha = 1 - p * 0.6;
     } else {
       ctx.translate(sx + shakeX, sy);
@@ -680,149 +767,138 @@
     // Shadow on ground
     ctx.fillStyle = 'rgba(0,0,0,0.18)';
     ctx.beginPath();
-    ctx.ellipse(b.w / 2, 6, b.w * 0.6, 8, 0, 0, Math.PI * 2);
+    ctx.ellipse(bw / 2, 6 * zoom, bw * 0.6, 8 * zoom, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Main building body (drawn upward from base)
     // Side face (3D effect)
-    var depth = 6;
+    var depth = 6 * zoom;
     ctx.fillStyle = b.pal.accent;
     ctx.beginPath();
-    ctx.moveTo(b.w, 0);
-    ctx.lineTo(b.w + depth, -depth);
-    ctx.lineTo(b.w + depth, -b.h - depth);
-    ctx.lineTo(b.w, -b.h);
+    ctx.moveTo(bw, 0);
+    ctx.lineTo(bw + depth, -depth);
+    ctx.lineTo(bw + depth, -bh - depth);
+    ctx.lineTo(bw, -bh);
     ctx.closePath();
     ctx.fill();
 
     // Top face
     ctx.fillStyle = b.pal.roof;
     ctx.beginPath();
-    ctx.moveTo(0, -b.h);
-    ctx.lineTo(depth, -b.h - depth);
-    ctx.lineTo(b.w + depth, -b.h - depth);
-    ctx.lineTo(b.w, -b.h);
+    ctx.moveTo(0, -bh);
+    ctx.lineTo(depth, -bh - depth);
+    ctx.lineTo(bw + depth, -bh - depth);
+    ctx.lineTo(bw, -bh);
     ctx.closePath();
     ctx.fill();
 
     // Front face
     ctx.fillStyle = b.pal.wall;
-    ctx.fillRect(0, -b.h, b.w, b.h);
+    ctx.fillRect(0, -bh, bw, bh);
 
     // Floor lines
     for (var f = 0; f < b.floors; f++) {
-      var fy = -b.floorH * f;
+      var fy = -floorH * f;
       ctx.fillStyle = 'rgba(0,0,0,0.06)';
-      ctx.fillRect(0, fy - 1, b.w, 1);
+      ctx.fillRect(0, fy - 1 * zoom, bw, 1 * zoom);
     }
 
     // Brick/panel lines for detail
     if (b.type === 'house' || b.type === 'apartment') {
       ctx.strokeStyle = 'rgba(0,0,0,0.05)';
       ctx.lineWidth = 0.5;
-      var brickH = 4;
-      for (var br = 0; br < b.h / brickH; br++) {
+      var brickH = 4 * zoom;
+      for (var br = 0; br < bh / brickH; br++) {
         var bry = -br * brickH;
-        ctx.beginPath(); ctx.moveTo(0, bry); ctx.lineTo(b.w, bry); ctx.stroke();
-        // Offset bricks every other row
+        ctx.beginPath(); ctx.moveTo(0, bry); ctx.lineTo(bw, bry); ctx.stroke();
         if (br % 2 === 0) {
-          for (var bx = 0; bx < b.w; bx += 10) {
+          for (var bx = 0; bx < bw; bx += 10 * zoom) {
             ctx.beginPath(); ctx.moveTo(bx, bry); ctx.lineTo(bx, bry - brickH); ctx.stroke();
           }
         } else {
-          for (var bx = 5; bx < b.w; bx += 10) {
+          for (var bx = 5 * zoom; bx < bw; bx += 10 * zoom) {
             ctx.beginPath(); ctx.moveTo(bx, bry); ctx.lineTo(bx, bry - brickH); ctx.stroke();
           }
         }
       }
     } else if (b.type === 'office' || b.type === 'skyscraper') {
-      // Vertical panel lines
       ctx.strokeStyle = 'rgba(0,0,0,0.08)';
       ctx.lineWidth = 0.5;
-      var panelW = b.w / (b.winsPerFloor + 1);
+      var panelW = bw / (b.winsPerFloor + 1);
       for (var pl = 1; pl <= b.winsPerFloor; pl++) {
-        ctx.beginPath(); ctx.moveTo(pl * panelW, -b.h); ctx.lineTo(pl * panelW, 0); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(pl * panelW, -bh); ctx.lineTo(pl * panelW, 0); ctx.stroke();
       }
     }
 
-    // Windows (using pre-computed lit states)
-    var winW = 5;
-    var winH = 6;
-    var winGap = (b.w - 6) / b.winsPerFloor;
+    // Windows
+    var winW = 5 * zoom;
+    var winH = 6 * zoom;
+    var winGap = (bw - 6 * zoom) / b.winsPerFloor;
     for (var f = 0; f < b.floors; f++) {
-      var fy = -b.floorH * f - b.floorH * 0.4;
+      var fy = -floorH * f - floorH * 0.4;
       for (var wi = 0; wi < b.winsPerFloor; wi++) {
-        var wx = 5 + wi * winGap;
-        // Window frame
+        var wx = 5 * zoom + wi * winGap;
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
-        ctx.fillRect(wx - 1, fy - winH - 1, winW + 2, winH + 2);
-        // Window glass - stable lit state
+        ctx.fillRect(wx - 1 * zoom, fy - winH - 1 * zoom, winW + 2 * zoom, winH + 2 * zoom);
         var lit = b.windowLit[f][wi];
         ctx.fillStyle = lit ? b.pal.win : 'rgba(40,60,80,0.8)';
         ctx.fillRect(wx, fy - winH, winW, winH);
-        // Window cross divider
         ctx.strokeStyle = 'rgba(0,0,0,0.15)';
         ctx.lineWidth = 0.5;
-        ctx.beginPath(); ctx.moveTo(wx + winW/2, fy - winH); ctx.lineTo(wx + winW/2, fy); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(wx, fy - winH/2); ctx.lineTo(wx + winW, fy - winH/2); ctx.stroke();
-        // Subtle glare
+        ctx.beginPath(); ctx.moveTo(wx + winW / 2, fy - winH); ctx.lineTo(wx + winW / 2, fy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(wx, fy - winH / 2); ctx.lineTo(wx + winW, fy - winH / 2); ctx.stroke();
         if (lit) {
           ctx.fillStyle = 'rgba(255,255,255,0.15)';
           ctx.fillRect(wx, fy - winH, winW * 0.35, winH * 0.35);
         }
-        // Window sill
         ctx.fillStyle = 'rgba(0,0,0,0.1)';
-        ctx.fillRect(wx - 1, fy, winW + 2, 1.5);
+        ctx.fillRect(wx - 1 * zoom, fy, winW + 2 * zoom, 1.5 * zoom);
       }
     }
 
     // AC units
     for (var ac = 0; ac < b.acUnits.length; ac++) {
       var unit = b.acUnits[ac];
-      var acY = -unit.floor * b.floorH - b.floorH * 0.3;
-      var acX = unit.side === 'left' ? -4 : b.w;
+      var acY = -unit.floor * floorH - floorH * 0.3;
+      var acX = unit.side === 'left' ? -4 * zoom : bw;
       ctx.fillStyle = '#bbb';
-      ctx.fillRect(acX, acY - 5, 5, 5);
+      ctx.fillRect(acX, acY - 5 * zoom, 5 * zoom, 5 * zoom);
       ctx.fillStyle = '#999';
-      ctx.fillRect(acX + 0.5, acY - 4.5, 4, 1);
-      ctx.fillRect(acX + 0.5, acY - 2.5, 4, 1);
+      ctx.fillRect(acX + 0.5 * zoom, acY - 4.5 * zoom, 4 * zoom, 1 * zoom);
+      ctx.fillRect(acX + 0.5 * zoom, acY - 2.5 * zoom, 4 * zoom, 1 * zoom);
     }
 
     // Door (ground floor)
+    var doorW = b.doorW * zoom;
+    var doorH = b.doorH * zoom;
     ctx.fillStyle = '#4a3020';
-    var doorX = b.w / 2 - b.doorW / 2;
-    ctx.fillRect(doorX, -b.doorH, b.doorW, b.doorH);
-    // Door panels
+    var doorX = bw / 2 - doorW / 2;
+    ctx.fillRect(doorX, -doorH, doorW, doorH);
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 0.5;
-    ctx.strokeRect(doorX + 2, -b.doorH + 2, b.doorW - 4, b.doorH * 0.4);
-    ctx.strokeRect(doorX + 2, -b.doorH * 0.5, b.doorW - 4, b.doorH * 0.4);
-    // Door window
+    ctx.strokeRect(doorX + 2 * zoom, -doorH + 2 * zoom, doorW - 4 * zoom, doorH * 0.4);
+    ctx.strokeRect(doorX + 2 * zoom, -doorH * 0.5, doorW - 4 * zoom, doorH * 0.4);
     ctx.fillStyle = 'rgba(200,220,240,0.3)';
-    ctx.fillRect(doorX + 2, -b.doorH + 2, b.doorW - 4, b.doorH * 0.35);
-    // Door knob
+    ctx.fillRect(doorX + 2 * zoom, -doorH + 2 * zoom, doorW - 4 * zoom, doorH * 0.35);
     ctx.fillStyle = '#c0a040';
     ctx.beginPath();
-    ctx.arc(doorX + b.doorW * 0.78, -b.doorH * 0.35, 1.2, 0, Math.PI * 2);
+    ctx.arc(doorX + doorW * 0.78, -doorH * 0.35, 1.2 * zoom, 0, Math.PI * 2);
     ctx.fill();
-    // Door step
     ctx.fillStyle = '#888';
-    ctx.fillRect(doorX - 3, 0, b.doorW + 6, 2);
+    ctx.fillRect(doorX - 3 * zoom, 0, doorW + 6 * zoom, 2 * zoom);
 
     // Shop awning
     if (b.hasAwning) {
       ctx.fillStyle = b.awningColor;
       ctx.beginPath();
-      ctx.moveTo(0, -b.doorH - 4);
-      ctx.lineTo(b.w, -b.doorH - 4);
-      ctx.lineTo(b.w + 4, -b.doorH + 6);
-      ctx.lineTo(-4, -b.doorH + 6);
+      ctx.moveTo(0, -doorH - 4 * zoom);
+      ctx.lineTo(bw, -doorH - 4 * zoom);
+      ctx.lineTo(bw + 4 * zoom, -doorH + 6 * zoom);
+      ctx.lineTo(-4 * zoom, -doorH + 6 * zoom);
       ctx.closePath();
       ctx.fill();
-      // Awning stripes
       ctx.fillStyle = 'rgba(255,255,255,0.15)';
-      for (var as = 0; as < b.w; as += 6) {
-        ctx.fillRect(as, -b.doorH - 4, 3, 10);
+      for (var as = 0; as < bw; as += 6 * zoom) {
+        ctx.fillRect(as, -doorH - 4 * zoom, 3 * zoom, 10 * zoom);
       }
     }
 
@@ -830,77 +906,73 @@
     if (b.roofType === 'peaked') {
       ctx.fillStyle = b.pal.roof;
       ctx.beginPath();
-      ctx.moveTo(-2, -b.h);
-      ctx.lineTo(b.w / 2, -b.h - 15);
-      ctx.lineTo(b.w + 2, -b.h);
+      ctx.moveTo(-2 * zoom, -bh);
+      ctx.lineTo(bw / 2, -bh - 15 * zoom);
+      ctx.lineTo(bw + 2 * zoom, -bh);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = 'rgba(255,255,255,0.08)';
       ctx.beginPath();
-      ctx.moveTo(-2, -b.h);
-      ctx.lineTo(b.w / 2, -b.h - 15);
-      ctx.lineTo(b.w / 2, -b.h);
+      ctx.moveTo(-2 * zoom, -bh);
+      ctx.lineTo(bw / 2, -bh - 15 * zoom);
+      ctx.lineTo(bw / 2, -bh);
       ctx.closePath();
       ctx.fill();
       // Chimney
       ctx.fillStyle = '#8a6040';
-      ctx.fillRect(b.w * 0.7, -b.h - 12, 6, 12);
+      ctx.fillRect(bw * 0.7, -bh - 12 * zoom, 6 * zoom, 12 * zoom);
       ctx.fillStyle = '#666';
-      ctx.fillRect(b.w * 0.7 - 1, -b.h - 14, 8, 3);
+      ctx.fillRect(bw * 0.7 - 1 * zoom, -bh - 14 * zoom, 8 * zoom, 3 * zoom);
     } else if (b.roofType === 'antenna') {
-      // Rooftop equipment
       ctx.fillStyle = '#777';
-      ctx.fillRect(b.w * 0.15, -b.h - 5, 8, 5);
-      ctx.fillRect(b.w * 0.6, -b.h - 3, 6, 3);
-      // Antenna
+      ctx.fillRect(bw * 0.15, -bh - 5 * zoom, 8 * zoom, 5 * zoom);
+      ctx.fillRect(bw * 0.6, -bh - 3 * zoom, 6 * zoom, 3 * zoom);
       ctx.strokeStyle = '#888';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 * zoom;
       ctx.beginPath();
-      ctx.moveTo(b.w / 2, -b.h);
-      ctx.lineTo(b.w / 2, -b.h - 20);
+      ctx.moveTo(bw / 2, -bh);
+      ctx.lineTo(bw / 2, -bh - 20 * zoom);
       ctx.stroke();
-      // Steady red light (no more flashing)
       ctx.fillStyle = '#ff3030';
       ctx.beginPath();
-      ctx.arc(b.w / 2, -b.h - 20, 2, 0, Math.PI * 2);
+      ctx.arc(bw / 2, -bh - 20 * zoom, 2 * zoom, 0, Math.PI * 2);
       ctx.fill();
-      // Subtle glow around light
       ctx.fillStyle = 'rgba(255,48,48,0.15)';
       ctx.beginPath();
-      ctx.arc(b.w / 2, -b.h - 20, 5, 0, Math.PI * 2);
+      ctx.arc(bw / 2, -bh - 20 * zoom, 5 * zoom, 0, Math.PI * 2);
       ctx.fill();
     } else if (b.roofType === 'ledge') {
       ctx.fillStyle = b.pal.accent;
-      ctx.fillRect(-3, -b.h - 4, b.w + 6, 5);
-      // Rooftop railing
+      ctx.fillRect(-3 * zoom, -bh - 4 * zoom, bw + 6 * zoom, 5 * zoom);
       ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(0, -b.h - 6); ctx.lineTo(b.w, -b.h - 6); ctx.stroke();
-      for (var rl = 0; rl < b.w; rl += 8) {
-        ctx.beginPath(); ctx.moveTo(rl, -b.h - 4); ctx.lineTo(rl, -b.h - 7); ctx.stroke();
+      ctx.lineWidth = 1 * zoom;
+      ctx.beginPath(); ctx.moveTo(0, -bh - 6 * zoom); ctx.lineTo(bw, -bh - 6 * zoom); ctx.stroke();
+      for (var rl = 0; rl < bw; rl += 8 * zoom) {
+        ctx.beginPath(); ctx.moveTo(rl, -bh - 4 * zoom); ctx.lineTo(rl, -bh - 7 * zoom); ctx.stroke();
       }
     }
 
     // Base/foundation
     ctx.fillStyle = '#666';
-    ctx.fillRect(-2, -2, b.w + 4, 4);
+    ctx.fillRect(-2 * zoom, -2 * zoom, bw + 4 * zoom, 4 * zoom);
     ctx.fillStyle = 'rgba(0,0,0,0.1)';
-    ctx.fillRect(-2, 0, b.w + 4, 2);
+    ctx.fillRect(-2 * zoom, 0, bw + 4 * zoom, 2 * zoom);
 
     ctx.restore();
   }
 
   function drawBlender() {
-    var sx = player.x - camX;
-    var sy = player.y - camY;
-    var r = player.r;
+    var zoom = getZoom();
+    var sx = (player.x - camX) * zoom;
+    var sy = (player.y - camY) * zoom;
+    var r = player.r * zoom;
 
     ctx.save();
 
     // Outer cracked earth rim
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 8, 0, Math.PI * 2);
-    var rimGrad = ctx.createRadialGradient(sx, sy, r - 2, sx, sy, r + 8);
+    ctx.arc(sx, sy, r + 8 * zoom, 0, Math.PI * 2);
+    var rimGrad = ctx.createRadialGradient(sx, sy, r - 2 * zoom, sx, sy, r + 8 * zoom);
     rimGrad.addColorStop(0, 'rgba(60,40,20,0.6)');
     rimGrad.addColorStop(0.5, 'rgba(80,60,30,0.3)');
     rimGrad.addColorStop(1, 'rgba(0,0,0,0)');
@@ -914,13 +986,13 @@
       var ca = (Math.PI * 2 / 12) * c + bladeAngle * 0.02;
       ctx.beginPath();
       ctx.moveTo(sx + Math.cos(ca) * r * 0.95, sy + Math.sin(ca) * r * 0.95);
-      ctx.lineTo(sx + Math.cos(ca) * (r + 6 + Math.sin(c * 3) * 3), sy + Math.sin(ca) * (r + 6 + Math.sin(c * 3) * 3));
+      ctx.lineTo(sx + Math.cos(ca) * (r + (6 + Math.sin(c * 3) * 3) * zoom), sy + Math.sin(ca) * (r + (6 + Math.sin(c * 3) * 3) * zoom));
       ctx.stroke();
     }
 
     // Hole shadow ring
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 3, 0, Math.PI * 2);
+    ctx.arc(sx, sy, r + 3 * zoom, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fill();
 
@@ -952,13 +1024,12 @@
       ctx.beginPath();
       for (var a = 0; a < Math.PI * 4; a += 0.08) {
         var spiralR = (a / (Math.PI * 4)) * r * 0.88;
-        var opacity = 1 - (a / (Math.PI * 4));
         var px = sx + Math.cos(startA + a) * spiralR;
         var py = sy + Math.sin(startA + a) * spiralR;
         if (a === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
-      ctx.strokeStyle = 'rgba(232,93,38,' + 0.2 + ')';
+      ctx.strokeStyle = 'rgba(232,93,38,0.2)';
       ctx.lineWidth = 1.2;
       ctx.stroke();
     }
@@ -966,12 +1037,10 @@
     // 6 curved blades with thickness
     for (var i = 0; i < 6; i++) {
       var a = bladeAngle + (Math.PI / 3) * i;
-
-      // Blade body (filled curved shape)
-      ctx.beginPath();
       var innerR = r * 0.12;
       var outerR = r * 0.9;
-      // Leading edge
+
+      ctx.beginPath();
       ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR);
       ctx.quadraticCurveTo(
         sx + Math.cos(a + 0.35) * r * 0.55,
@@ -979,9 +1048,7 @@
         sx + Math.cos(a + 0.08) * outerR,
         sy + Math.sin(a + 0.08) * outerR
       );
-      // Tip
       ctx.lineTo(sx + Math.cos(a - 0.04) * outerR, sy + Math.sin(a - 0.04) * outerR);
-      // Trailing edge
       ctx.quadraticCurveTo(
         sx + Math.cos(a + 0.15) * r * 0.45,
         sy + Math.sin(a + 0.15) * r * 0.45,
@@ -1027,7 +1094,7 @@
     for (var b = 0; b < 4; b++) {
       var ba = bladeAngle * 0.5 + (Math.PI / 2) * b;
       ctx.beginPath();
-      ctx.arc(sx + Math.cos(ba) * hubR * 0.6, sy + Math.sin(ba) * hubR * 0.6, 1.2, 0, Math.PI * 2);
+      ctx.arc(sx + Math.cos(ba) * hubR * 0.6, sy + Math.sin(ba) * hubR * 0.6, 1.2 * zoom, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(0,0,0,0.3)';
       ctx.fill();
     }
@@ -1036,7 +1103,7 @@
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
     ctx.strokeStyle = '#3a3020';
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 3 * zoom;
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
@@ -1057,28 +1124,30 @@
   }
 
   function drawParticles() {
+    var zoom = getZoom();
     for (var i = 0; i < particles.length; i++) {
       var p = particles[i];
       ctx.globalAlpha = p.life;
       ctx.fillStyle = p.color;
-      var psx = p.x - camX;
-      var psy = p.y - camY;
-      // Draw as small rectangles for debris effect
+      var psx = (p.x - camX) * zoom;
+      var psy = (p.y - camY) * zoom;
       ctx.save();
       ctx.translate(psx, psy);
       ctx.rotate(p.life * 5);
-      ctx.fillRect(-p.r / 2, -p.r / 2, p.r, p.r);
+      ctx.fillRect(-p.r / 2 * zoom, -p.r / 2 * zoom, p.r * zoom, p.r * zoom);
       ctx.restore();
     }
     ctx.globalAlpha = 1;
   }
 
   function drawCar(c) {
-    var sx = c.x - camX;
-    var sy = c.y - camY;
+    var zoom = getZoom();
+    var sx = (c.x - camX) * zoom;
+    var sy = (c.y - camY) * zoom;
     if (sx < -30 || sx > W + 30 || sy < -30 || sy > H + 30) return;
     ctx.save();
     ctx.translate(sx, sy);
+    ctx.scale(zoom, zoom);
     if (!c.horizontal) ctx.rotate(Math.PI / 2);
     if (c.dir < 0) ctx.scale(-1, 1);
     var hw = c.w / 2;
@@ -1113,11 +1182,13 @@
   }
 
   function drawPerson(pe) {
-    var sx = pe.x - camX;
-    var sy = pe.y - camY;
+    var zoom = getZoom();
+    var sx = (pe.x - camX) * zoom;
+    var sy = (pe.y - camY) * zoom;
     if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) return;
     ctx.save();
     ctx.translate(sx, sy);
+    ctx.scale(zoom, zoom);
     var bob = Math.sin(pe.step) * 0.8;
     // Shadow
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
@@ -1152,6 +1223,72 @@
     ctx.restore();
   }
 
+  function drawMinimap() {
+    var mw = minimapCanvas.width;
+    var mh = minimapCanvas.height;
+    minimapCtx.clearRect(0, 0, mw, mh);
+
+    // Background
+    minimapCtx.fillStyle = 'rgba(30,40,30,0.85)';
+    minimapCtx.fillRect(0, 0, mw, mh);
+
+    var scaleX = mw / worldW;
+    var scaleY = mh / worldH;
+
+    // Draw roads on minimap
+    var roadW = 40;
+    var blockSize = 200;
+    var cols = Math.floor(worldW / (blockSize + roadW)) + 1;
+    var rows = Math.floor(worldH / (blockSize + roadW)) + 1;
+    minimapCtx.fillStyle = 'rgba(80,80,80,0.4)';
+    for (var col = 0; col <= cols; col++) {
+      var rx = col * (blockSize + roadW) * scaleX;
+      minimapCtx.fillRect(rx, 0, roadW * scaleX, mh);
+    }
+    for (var row = 0; row <= rows; row++) {
+      var ry = row * (blockSize + roadW) * scaleY;
+      minimapCtx.fillRect(0, ry, mw, roadW * scaleY);
+    }
+
+    // Draw remaining buildings as dots
+    for (var i = 0; i < buildings.length; i++) {
+      var b = buildings[i];
+      if (b.absorbed) continue;
+      var bx = b.x * scaleX;
+      var by = b.y * scaleY;
+      var bs = Math.max(1.5, b.w * scaleX);
+      // Color by size class
+      if (b.sizeClass <= 1) minimapCtx.fillStyle = 'rgba(150,150,150,0.6)';
+      else if (b.sizeClass <= 3) minimapCtx.fillStyle = 'rgba(200,180,100,0.7)';
+      else minimapCtx.fillStyle = 'rgba(255,120,50,0.8)';
+      minimapCtx.fillRect(bx, by, bs, bs);
+    }
+
+    // Draw viewport rectangle
+    var zoom = getZoom();
+    var vx = camX * scaleX;
+    var vy = camY * scaleY;
+    var vw = (W / zoom) * scaleX;
+    var vh = (H / zoom) * scaleY;
+    minimapCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+    minimapCtx.lineWidth = 1;
+    minimapCtx.strokeRect(vx, vy, vw, vh);
+
+    // Draw player position
+    var px = player.x * scaleX;
+    var py = player.y * scaleY;
+    var pr = Math.max(3, player.r * scaleX);
+    minimapCtx.fillStyle = '#e85d26';
+    minimapCtx.beginPath();
+    minimapCtx.arc(px, py, pr, 0, Math.PI * 2);
+    minimapCtx.fill();
+    // Glow
+    minimapCtx.fillStyle = 'rgba(232,93,38,0.3)';
+    minimapCtx.beginPath();
+    minimapCtx.arc(px, py, pr * 2, 0, Math.PI * 2);
+    minimapCtx.fill();
+  }
+
   function draw() {
     ctx.clearRect(0, 0, W, H);
     drawGround();
@@ -1182,6 +1319,7 @@
     }
 
     drawParticles();
+    drawMinimap();
   }
 
   function loop() {
@@ -1233,7 +1371,6 @@
         var by = sc.height - b.h;
         sctx.fillStyle = b.color;
         sctx.fillRect(b.x, by, b.w, b.h);
-        // Windows
         var ww = 3, wh = 3;
         var gap = (b.w - 4) / b.wpc;
         for (var j = 0; j < b.wins.length; j++) {
