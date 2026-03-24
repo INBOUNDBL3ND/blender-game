@@ -1044,8 +1044,8 @@
           continue;
         }
 
-        // 1 building per block
-        var numBuildings = 1;
+        // 1-2 buildings per block
+        var numBuildings = 1 + Math.floor(Math.random() * 2);
         for (var b = 0; b < numBuildings; b++) {
           var r = Math.random();
           var cumulative = 0;
@@ -1431,7 +1431,7 @@
             score += chipScore;
             document.getElementById('score').textContent = score;
 
-            var chipGrowth = ((b.w * 0.009 + b.sizeClass * 0.1) / b.maxHP) * 1.5;
+            var chipGrowth = ((b.w * 0.02 + b.sizeClass * 0.25) / b.maxHP) * 1.5;
             player.r += chipGrowth;
             updateSizeBar();
 
