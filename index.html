@@ -297,7 +297,6 @@
 
   // Road system
   var roadSegments = []; // {x1,y1,x2,y2,type:'city'|'highway'|'dirt',width}
-  var bridges = [];      // {x,y,w,h,type:'concrete'|'wood'|'steel',horizontal}
   var manholes = [];     // {x,y}
   var roadGrid = {};     // col,row -> blockW, blockH for varied blocks
 
@@ -393,19 +392,106 @@
     return false;
   }
 
-  // Check if point is on a bridge
-  function pointOnBridge(px, py) {
-    for (var bi = 0; bi < bridges.length; bi++) {
-      var br = bridges[bi];
-      if (px >= br.x - 2 && px <= br.x + br.w + 2 && py >= br.y - 2 && py <= br.y + br.h + 2) return true;
+  function pointInWater(px, py) {
+    return pointInLake(px, py) || pointInRiver(px, py);
+  }
+
+  // Check if point is in water with a margin (for buildings, details, etc.)
+  function pointNearWater(px, py, margin) {
+    margin = margin || 30;
+    for (var li = 0; li < lakes.length; li++) {
+      var lake = lakes[li];
+      var dx = px - lake.cx;
+      var dy = py - lake.cy;
+      if (Math.sqrt(dx * dx + dy * dy) < lake.baseR * 1.1 + margin) return true;
+    }
+    for (var ri = 0; ri < rivers.length; ri++) {
+      var river = rivers[ri];
+      for (var pi = 0; pi < river.points.length - 1; pi++) {
+        var p1 = river.points[pi];
+        var p2 = river.points[pi + 1];
+        var ldx = p2.x - p1.x;
+        var ldy = p2.y - p1.y;
+        var len2 = ldx * ldx + ldy * ldy;
+        if (len2 === 0) continue;
+        var t = Math.max(0, Math.min(1, ((px - p1.x) * ldx + (py - p1.y) * ldy) / len2));
+        var projX = p1.x + t * ldx;
+        var projY = p1.y + t * ldy;
+        var dist = Math.sqrt((px - projX) * (px - projX) + (py - projY) * (py - projY));
+        if (dist < river.width / 2 + 5 + margin) return true;
+      }
     }
     return false;
   }
 
-  function pointInWater(px, py) {
-    // If on a bridge, not blocked by water
-    if (pointOnBridge(px, py)) return false;
-    return pointInLake(px, py) || pointInRiver(px, py);
+  // Check if a line segment intersects any water body
+  function segmentCrossesWater(x1, y1, x2, y2, width) {
+    var hw = (width || 0) / 2;
+    var step = 15;
+    var isVert = (x1 === x2);
+    var len = isVert ? Math.abs(y2 - y1) : Math.abs(x2 - x1);
+    var steps = Math.max(1, Math.ceil(len / step));
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var px = x1 + (x2 - x1) * t;
+      var py = y1 + (y2 - y1) * t;
+      // Check center and both edges of road
+      if (pointInLake(px, py) || pointInRiver(px, py)) return true;
+      if (hw > 0) {
+        if (isVert) {
+          if (pointInLake(px - hw, py) || pointInRiver(px - hw, py)) return true;
+          if (pointInLake(px + hw, py) || pointInRiver(px + hw, py)) return true;
+        } else {
+          if (pointInLake(px, py - hw) || pointInRiver(px, py - hw)) return true;
+          if (pointInLake(px, py + hw) || pointInRiver(px, py + hw)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Find where a road segment first hits water, returns array of non-water sub-segments
+  function splitSegmentAroundWater(x1, y1, x2, y2, width) {
+    var hw = (width || 0) / 2;
+    var isVert = (x1 === x2);
+    var len = isVert ? Math.abs(y2 - y1) : Math.abs(x2 - x1);
+    var step = 8;
+    var steps = Math.max(1, Math.ceil(len / step));
+    var segments = [];
+    var inRoad = false;
+    var segStart = 0;
+    var margin = hw + 15; // extra margin so roads don't get too close to water
+
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var px = x1 + (x2 - x1) * t;
+      var py = y1 + (y2 - y1) * t;
+      var inWater = pointNearWater(px, py, 10);
+
+      if (!inWater && !inRoad) {
+        inRoad = true;
+        segStart = t;
+      } else if (inWater && inRoad) {
+        inRoad = false;
+        if (t - segStart > 0.02) { // minimum segment length
+          segments.push({
+            x1: x1 + (x2 - x1) * segStart,
+            y1: y1 + (y2 - y1) * segStart,
+            x2: x1 + (x2 - x1) * t,
+            y2: y1 + (y2 - y1) * t
+          });
+        }
+      }
+    }
+    if (inRoad) {
+      segments.push({
+        x1: x1 + (x2 - x1) * segStart,
+        y1: y1 + (y2 - y1) * segStart,
+        x2: x2,
+        y2: y2
+      });
+    }
+    return segments;
   }
 
   function pointInPark(px, py) {
@@ -533,7 +619,6 @@
   // ==========================================
   function generateRoadGrid(cols, rows, baseBlockSize, roadW) {
     roadSegments = [];
-    bridges = [];
     manholes = [];
     roadGrid = {};
 
@@ -601,7 +686,7 @@
       }
     }
 
-    // Now build proper road segments
+    // Now build proper road segments, splitting around water
     // Vertical roads
     for (var c = 0; c <= cols; c++) {
       var isHW = isHighwayCol(c, hwCols);
@@ -609,10 +694,15 @@
       var rw = isHW ? 60 : (isEdge ? 20 : roadW);
       var type = isHW ? 'highway' : (isEdge ? 'dirt' : 'city');
       var rx = colX[c] + rw / 2;
-      roadSegments.push({
-        x1: rx, y1: 0, x2: rx, y2: worldH,
-        width: rw, type: type, vertical: true, index: c
-      });
+      // Split this road around water bodies
+      var subSegs = splitSegmentAroundWater(rx, 0, rx, worldH, rw);
+      for (var ss = 0; ss < subSegs.length; ss++) {
+        roadSegments.push({
+          x1: subSegs[ss].x1, y1: subSegs[ss].y1,
+          x2: subSegs[ss].x2, y2: subSegs[ss].y2,
+          width: rw, type: type, vertical: true, index: c
+        });
+      }
     }
 
     // Horizontal roads
@@ -622,30 +712,32 @@
       var rh = isHW ? 60 : (isEdge ? 20 : roadW);
       var type = isHW ? 'highway' : (isEdge ? 'dirt' : 'city');
       var ry = rowY[r] + rh / 2;
-      roadSegments.push({
-        x1: 0, y1: ry, x2: worldW, y2: ry,
-        width: rh, type: type, horizontal: true, index: r
-      });
+      // Split this road around water bodies
+      var subSegs = splitSegmentAroundWater(0, ry, worldW, ry, rh);
+      for (var ss = 0; ss < subSegs.length; ss++) {
+        roadSegments.push({
+          x1: subSegs[ss].x1, y1: subSegs[ss].y1,
+          x2: subSegs[ss].x2, y2: subSegs[ss].y2,
+          width: rh, type: type, horizontal: true, index: r
+        });
+      }
     }
-
-    // Detect bridge locations (road-water crossings)
-    generateBridges();
 
     // Generate manholes on city streets
     for (var si = 0; si < roadSegments.length; si++) {
       var seg = roadSegments[si];
       if (seg.type !== 'city') continue;
-      var segLen = seg.vertical ? worldH : worldW;
+      var segLen = seg.vertical ? Math.abs(seg.y2 - seg.y1) : Math.abs(seg.x2 - seg.x1);
       var numMH = Math.floor(segLen / 400);
       for (var mi = 0; mi < numMH; mi++) {
         if (Math.random() > 0.4) continue;
-        var pos = 100 + Math.random() * (segLen - 200);
+        var frac = 0.1 + Math.random() * 0.8;
         var mx, my;
         if (seg.vertical) {
           mx = seg.x1 + (Math.random() - 0.5) * seg.width * 0.4;
-          my = pos;
+          my = seg.y1 + (seg.y2 - seg.y1) * frac;
         } else {
-          mx = pos;
+          mx = seg.x1 + (seg.x2 - seg.x1) * frac;
           my = seg.y1 + (Math.random() - 0.5) * seg.width * 0.4;
         }
         manholes.push({ x: mx, y: my });
@@ -653,57 +745,6 @@
     }
 
     return { colX: colX, rowY: rowY, colWidths: colWidths, rowHeights: rowHeights, hwCols: hwCols, hwRows: hwRows, cols: cols, rows: rows };
-  }
-
-  function generateBridges() {
-    bridges = [];
-    for (var si = 0; si < roadSegments.length; si++) {
-      var seg = roadSegments[si];
-      // Sample along the road to find water crossings
-      var isVert = seg.vertical;
-      var start = isVert ? 0 : 0;
-      var end = isVert ? worldH : worldW;
-      var step = 10;
-      var inWater = false;
-      var waterStart = 0;
-
-      for (var pos = start; pos <= end; pos += step) {
-        var px = isVert ? seg.x1 : pos;
-        var py = isVert ? pos : seg.y1;
-        var onWater = pointInLake(px, py) || pointInRiver(px, py);
-
-        if (onWater && !inWater) {
-          waterStart = pos;
-          inWater = true;
-        } else if (!onWater && inWater) {
-          inWater = false;
-          var waterEnd = pos;
-          var bLen = waterEnd - waterStart + 20; // extend past edges
-          var bStart = waterStart - 10;
-
-          var bridgeType;
-          if (seg.type === 'highway') bridgeType = 'concrete';
-          else if (seg.type === 'dirt') bridgeType = 'wood';
-          else bridgeType = 'steel';
-
-          if (isVert) {
-            bridges.push({
-              x: seg.x1 - seg.width / 2 - 4, y: bStart,
-              w: seg.width + 8, h: bLen,
-              type: bridgeType, horizontal: false,
-              roadType: seg.type
-            });
-          } else {
-            bridges.push({
-              x: bStart, y: seg.y1 - seg.width / 2 - 4,
-              w: bLen, h: seg.width + 8,
-              type: bridgeType, horizontal: true,
-              roadType: seg.type
-            });
-          }
-        }
-      }
-    }
   }
 
   var gridInfo = null; // store for drawing
@@ -749,7 +790,7 @@
       });
     }
 
-    // Generate lakes first (we need them before road generation to detect bridges)
+    // Generate lakes first (we need them before road generation to route roads around water)
     lakes = [];
     var numLakes = 3 + Math.floor(lvl * 0.5);
     for (var li = 0; li < numLakes; li++) {
@@ -784,7 +825,7 @@
       rivers.push({ points: rPath, width: 18 + Math.random() * 14, flowOffset: Math.random() * Math.PI * 2 });
     }
 
-    // Generate road grid (after water, so bridges are detected)
+    // Generate road grid (after water, so roads split around water)
     gridInfo = generateRoadGrid(cols, rows, baseBlockSize, roadW);
 
     // Designate some blocks as parks - prefer blocks near edges or near lakes
@@ -795,12 +836,28 @@
         var gi = roadGrid[col + ',' + row];
         if (!gi) continue;
         var nearLake = false;
+        var blockCenterX = gi.blockX + gi.blockW / 2;
+        var blockCenterY = gi.blockY + gi.blockH / 2;
+        // Skip blocks whose center is in water
+        if (pointNearWater(blockCenterX, blockCenterY, 20)) continue;
         for (var li2 = 0; li2 < lakes.length; li2++) {
-          var ldx = (gi.blockX + gi.blockW / 2) - lakes[li2].cx;
-          var ldy = (gi.blockY + gi.blockH / 2) - lakes[li2].cy;
-          if (Math.sqrt(ldx * ldx + ldy * ldy) < lakes[li2].baseR + 200) nearLake = true;
+          var ldx = blockCenterX - lakes[li2].cx;
+          var ldy = blockCenterY - lakes[li2].cy;
+          if (Math.sqrt(ldx * ldx + ldy * ldy) < lakes[li2].baseR + 250) nearLake = true;
         }
-        var pc = nearLake ? 0.25 : (gi.isNearEdge ? 0.2 : parkChance);
+        // Also check proximity to rivers
+        if (!nearLake) {
+          for (var ri2 = 0; ri2 < rivers.length; ri2++) {
+            for (var rpi = 0; rpi < rivers[ri2].points.length; rpi++) {
+              var rp = rivers[ri2].points[rpi];
+              var rdx = blockCenterX - rp.x;
+              var rdy = blockCenterY - rp.y;
+              if (Math.sqrt(rdx * rdx + rdy * rdy) < rivers[ri2].width + 150) { nearLake = true; break; }
+            }
+            if (nearLake) break;
+          }
+        }
+        var pc = nearLake ? 0.35 : (gi.isNearEdge ? 0.2 : parkChance);
         if (Math.random() < pc) {
           var pdcx = (gi.blockX + gi.blockW / 2) - worldW / 2;
           var pdcy = (gi.blockY + gi.blockH / 2) - worldH / 2;
@@ -870,7 +927,7 @@
           for (var pti = 0; pti < parkTreeCount; pti++) {
             var tx = blockX + 10 + Math.random() * (blockW - 20);
             var ty = blockY + 10 + Math.random() * (blockH - 20);
-            if (!pointInLake(tx, ty) && !pointInRiver(tx, ty)) {
+            if (!pointNearWater(tx, ty, 10)) {
               trees.push({
                 x: tx, y: ty,
                 r: 6 + Math.random() * 8,
@@ -895,7 +952,7 @@
 
           var bx = blockX + 15 + Math.random() * (blockW - 80);
           var by = blockY + 15 + Math.random() * (blockH - 80);
-          if (pointInLake(bx, by) || pointInRiver(bx, by)) continue;
+          if (pointNearWater(bx, by, 25)) continue;
           var building = makeBuilding(bx, by, sizeClass);
           buildings.push(building);
           if (building.w > maxBuildingW) maxBuildingW = building.w;
@@ -915,7 +972,7 @@
         for (var ti = 0; ti < numTrees; ti++) {
           var ttx = blockX + 10 + Math.random() * (blockW - 20);
           var tty = blockY + 10 + Math.random() * (blockH - 20);
-          if (!pointInLake(ttx, tty) && !pointInRiver(ttx, tty)) {
+          if (!pointNearWater(ttx, tty, 10)) {
             trees.push({
               x: ttx, y: tty,
               r: 5 + Math.random() * 6,
@@ -932,13 +989,17 @@
       var seg = roadSegments[si];
       if (seg.type === 'dirt') continue; // Dirt roads: no urban furniture
 
-      var segLen = seg.vertical ? worldH : worldW;
+      var segLen = seg.vertical ? Math.abs(seg.y2 - seg.y1) : Math.abs(seg.x2 - seg.x1);
       var spacing = 80 + Math.random() * 60;
+      var segOrigin = seg.vertical ? Math.min(seg.y1, seg.y2) : Math.min(seg.x1, seg.x2);
 
-      for (var pos = 50; pos < segLen - 50; pos += spacing) {
+      for (var pos = segOrigin + 50; pos < segOrigin + segLen - 50; pos += spacing) {
         var rx, ry;
         if (seg.vertical) { rx = seg.x1; ry = pos; }
         else { rx = pos; ry = seg.y1; }
+
+        // Skip if near water
+        if (pointNearWater(rx, ry, 15)) continue;
 
         // Fire hydrants on sidewalks
         if (seg.type === 'city' && Math.random() > 0.7) {
@@ -1011,9 +1072,9 @@
       var rx, ry;
       if (isVert) {
         rx = seg.x1 + laneOffset;
-        ry = Math.random() * worldH;
+        ry = seg.y1 + Math.random() * (seg.y2 - seg.y1);
       } else {
-        rx = Math.random() * worldW;
+        rx = seg.x1 + Math.random() * (seg.x2 - seg.x1);
         ry = seg.y1 + laneOffset;
       }
       var sp = seg.type === 'highway' ? (1.0 + Math.random() * 1.5) : (seg.type === 'dirt' ? (0.3 + Math.random() * 0.5) : (0.5 + Math.random() * 1.2));
@@ -1043,9 +1104,9 @@
       var px, py, pDir;
       if (isVert) {
         px = seg.x1 + pSide;
-        py = Math.random() * worldH;
+        py = seg.y1 + Math.random() * (seg.y2 - seg.y1);
       } else {
-        px = Math.random() * worldW;
+        px = seg.x1 + Math.random() * (seg.x2 - seg.x1);
         py = seg.y1 + pSide;
       }
       pDir = Math.random() > 0.5 ? 1 : -1;
@@ -1562,7 +1623,7 @@
   }
 
   // ==========================================
-  // DRAW ROADS - varied types
+  // DRAW ROADS - varied types, split around water
   // ==========================================
   function drawRoads() {
     var zoom = getZoom();
@@ -1572,28 +1633,45 @@
       var isVert = seg.vertical;
       var hw = seg.width / 2;
 
-      // Calculate screen coords for road
+      // Calculate screen coords for road (segments are now split around water)
       var sx1, sy1, sx2, sy2;
       if (isVert) {
         sx1 = (seg.x1 - hw - camX) * zoom;
-        sy1 = (0 - camY) * zoom;
+        sy1 = (seg.y1 - camY) * zoom;
         sx2 = seg.width * zoom;
-        sy2 = worldH * zoom;
+        sy2 = (seg.y2 - seg.y1) * zoom;
       } else {
-        sx1 = (0 - camX) * zoom;
+        sx1 = (seg.x1 - camX) * zoom;
         sy1 = (seg.y1 - hw - camY) * zoom;
-        sx2 = worldW * zoom;
+        sx2 = (seg.x2 - seg.x1) * zoom;
         sy2 = seg.width * zoom;
       }
+
+      // Skip too-short segments
+      if (sx2 < 2 && sy2 < 2) continue;
 
       // Skip if off screen
       if (isVert && (sx1 + sx2 < -10 || sx1 > W + 10)) continue;
       if (!isVert && (sy1 + sy2 < -10 || sy1 > H + 10)) continue;
 
+      // Determine if segment ends are at world edges (sharp) or split at water (rounded)
+      var roundRadius = Math.min(seg.width * 0.4, 12) * zoom;
+      var isFullSegStart, isFullSegEnd;
+      if (isVert) {
+        isFullSegStart = seg.y1 <= 5;
+        isFullSegEnd = seg.y2 >= worldH - 5;
+      } else {
+        isFullSegStart = seg.x1 <= 5;
+        isFullSegEnd = seg.x2 >= worldW - 5;
+      }
+
       if (seg.type === 'highway') {
         // Dark smooth asphalt
         ctx.fillStyle = '#3a3a3a';
-        ctx.fillRect(sx1, sy1, sx2, sy2);
+        ctx.beginPath();
+        var rr = (!isFullSegStart || !isFullSegEnd) ? roundRadius : 0;
+        ctx.roundRect(sx1, sy1, sx2, sy2, rr);
+        ctx.fill();
 
         // Subtle noise texture
         ctx.fillStyle = 'rgba(50,50,50,0.15)';
@@ -1662,7 +1740,10 @@
       } else if (seg.type === 'dirt') {
         // Brown/tan dirt road
         ctx.fillStyle = '#9a8560';
-        ctx.fillRect(sx1, sy1, sx2, sy2);
+        ctx.beginPath();
+        var rr = (!isFullSegStart || !isFullSegEnd) ? roundRadius : 0;
+        ctx.roundRect(sx1, sy1, sx2, sy2, rr);
+        ctx.fill();
 
         // Rough edge: draw jagged edges
         ctx.fillStyle = '#7a6a48';
@@ -1711,7 +1792,10 @@
       } else {
         // City street
         ctx.fillStyle = '#555';
-        ctx.fillRect(sx1, sy1, sx2, sy2);
+        ctx.beginPath();
+        var rr = (!isFullSegStart || !isFullSegEnd) ? roundRadius : 0;
+        ctx.roundRect(sx1, sy1, sx2, sy2, rr);
+        ctx.fill();
 
         // Subtle asphalt texture variation
         ctx.fillStyle = 'rgba(70,70,70,0.2)';
@@ -1803,6 +1887,11 @@
         // Intersection at (segA.x1, segB.y1)
         var ix = segA.x1;
         var iy = segB.y1;
+
+        // Check if intersection point falls within both sub-segments
+        if (iy < segA.y1 || iy > segA.y2) continue;
+        if (ix < segB.x1 || ix > segB.x2) continue;
+
         var hwA = segA.width / 2;
         var hwB = segB.width / 2;
 
@@ -1903,179 +1992,6 @@
     }
   }
 
-  // ==========================================
-  // DRAW BRIDGES
-  // ==========================================
-  function drawBridges() {
-    var zoom = getZoom();
-    for (var bi = 0; bi < bridges.length; bi++) {
-      var br = bridges[bi];
-      var bx = (br.x - camX) * zoom;
-      var by = (br.y - camY) * zoom;
-      var bw = br.w * zoom;
-      var bh = br.h * zoom;
-
-      if (bx + bw < -20 || bx > W + 20 || by + bh < -20 || by > H + 20) continue;
-
-      // Shadow underneath (to show elevation)
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.fillRect(bx + 4 * zoom, by + 4 * zoom, bw, bh);
-
-      if (br.type === 'concrete') {
-        // Concrete bridge (highways) - wider, grey
-        ctx.fillStyle = '#707070';
-        ctx.fillRect(bx, by, bw, bh);
-
-        // Slightly lighter deck surface
-        ctx.fillStyle = '#808080';
-        ctx.fillRect(bx + 3 * zoom, by + 3 * zoom, bw - 6 * zoom, bh - 6 * zoom);
-
-        // Concrete texture
-        ctx.fillStyle = 'rgba(100,100,100,0.2)';
-        for (var n = 0; n < 8; n++) {
-          var tx = bx + seededRandom(bi * 100 + n) * bw;
-          var ty = by + seededRandom(bi * 100 + n + 50) * bh;
-          ctx.fillRect(tx, ty, 5 * zoom, 3 * zoom);
-        }
-
-        // Heavy railings
-        ctx.fillStyle = '#5a5a5a';
-        if (br.horizontal) {
-          ctx.fillRect(bx, by, bw, 3 * zoom);
-          ctx.fillRect(bx, by + bh - 3 * zoom, bw, 3 * zoom);
-          // Railing posts
-          for (var rp = bx; rp < bx + bw; rp += 15 * zoom) {
-            ctx.fillRect(rp, by, 2 * zoom, 3 * zoom);
-            ctx.fillRect(rp, by + bh - 3 * zoom, 2 * zoom, 3 * zoom);
-          }
-        } else {
-          ctx.fillRect(bx, by, 3 * zoom, bh);
-          ctx.fillRect(bx + bw - 3 * zoom, by, 3 * zoom, bh);
-          for (var rp = by; rp < by + bh; rp += 15 * zoom) {
-            ctx.fillRect(bx, rp, 3 * zoom, 2 * zoom);
-            ctx.fillRect(bx + bw - 3 * zoom, rp, 3 * zoom, 2 * zoom);
-          }
-        }
-
-        // Lane markings on bridge
-        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-        ctx.lineWidth = 1 * zoom;
-        ctx.setLineDash([8 * zoom, 6 * zoom]);
-        if (br.horizontal) {
-          ctx.beginPath(); ctx.moveTo(bx, by + bh / 2); ctx.lineTo(bx + bw, by + bh / 2); ctx.stroke();
-        } else {
-          ctx.beginPath(); ctx.moveTo(bx + bw / 2, by); ctx.lineTo(bx + bw / 2, by + bh); ctx.stroke();
-        }
-        ctx.setLineDash([]);
-
-      } else if (br.type === 'wood') {
-        // Wooden bridge (dirt roads) - brown, thinner
-        ctx.fillStyle = '#8a6a3a';
-        ctx.fillRect(bx, by, bw, bh);
-
-        // Plank lines
-        ctx.strokeStyle = 'rgba(60,40,20,0.4)';
-        ctx.lineWidth = 0.8 * zoom;
-        if (br.horizontal) {
-          for (var pl = bx; pl < bx + bw; pl += 6 * zoom) {
-            ctx.beginPath(); ctx.moveTo(pl, by); ctx.lineTo(pl, by + bh); ctx.stroke();
-          }
-        } else {
-          for (var pl = by; pl < by + bh; pl += 6 * zoom) {
-            ctx.beginPath(); ctx.moveTo(bx, pl); ctx.lineTo(bx + bw, pl); ctx.stroke();
-          }
-        }
-
-        // Lighter surface center
-        ctx.fillStyle = 'rgba(160,130,80,0.25)';
-        ctx.fillRect(bx + 2 * zoom, by + 2 * zoom, bw - 4 * zoom, bh - 4 * zoom);
-
-        // Wooden railings (thin brown lines)
-        ctx.strokeStyle = '#6a4a2a';
-        ctx.lineWidth = 2 * zoom;
-        if (br.horizontal) {
-          ctx.beginPath(); ctx.moveTo(bx, by + 1 * zoom); ctx.lineTo(bx + bw, by + 1 * zoom); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx, by + bh - 1 * zoom); ctx.lineTo(bx + bw, by + bh - 1 * zoom); ctx.stroke();
-          // Posts
-          ctx.lineWidth = 1.5 * zoom;
-          for (var rp = bx + 5 * zoom; rp < bx + bw; rp += 12 * zoom) {
-            ctx.beginPath(); ctx.moveTo(rp, by); ctx.lineTo(rp, by - 4 * zoom); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(rp, by + bh); ctx.lineTo(rp, by + bh + 4 * zoom); ctx.stroke();
-          }
-        } else {
-          ctx.beginPath(); ctx.moveTo(bx + 1 * zoom, by); ctx.lineTo(bx + 1 * zoom, by + bh); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx + bw - 1 * zoom, by); ctx.lineTo(bx + bw - 1 * zoom, by + bh); ctx.stroke();
-          ctx.lineWidth = 1.5 * zoom;
-          for (var rp = by + 5 * zoom; rp < by + bh; rp += 12 * zoom) {
-            ctx.beginPath(); ctx.moveTo(bx, rp); ctx.lineTo(bx - 4 * zoom, rp); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(bx + bw, rp); ctx.lineTo(bx + bw + 4 * zoom, rp); ctx.stroke();
-          }
-        }
-
-      } else {
-        // Steel bridge (city streets) - grey with steel girder pattern
-        ctx.fillStyle = '#686868';
-        ctx.fillRect(bx, by, bw, bh);
-
-        // Lighter deck
-        ctx.fillStyle = '#787878';
-        ctx.fillRect(bx + 2 * zoom, by + 2 * zoom, bw - 4 * zoom, bh - 4 * zoom);
-
-        // Steel girder pattern (diagonal cross-hatching on edges)
-        ctx.strokeStyle = 'rgba(100,110,120,0.5)';
-        ctx.lineWidth = 1 * zoom;
-        if (br.horizontal) {
-          // Top and bottom girder patterns
-          for (var gx = bx; gx < bx + bw; gx += 10 * zoom) {
-            ctx.beginPath(); ctx.moveTo(gx, by); ctx.lineTo(gx + 5 * zoom, by + 3 * zoom); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(gx + 5 * zoom, by); ctx.lineTo(gx, by + 3 * zoom); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(gx, by + bh - 3 * zoom); ctx.lineTo(gx + 5 * zoom, by + bh); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(gx + 5 * zoom, by + bh - 3 * zoom); ctx.lineTo(gx, by + bh); ctx.stroke();
-          }
-        } else {
-          for (var gy = by; gy < by + bh; gy += 10 * zoom) {
-            ctx.beginPath(); ctx.moveTo(bx, gy); ctx.lineTo(bx + 3 * zoom, gy + 5 * zoom); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(bx, gy + 5 * zoom); ctx.lineTo(bx + 3 * zoom, gy); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(bx + bw - 3 * zoom, gy); ctx.lineTo(bx + bw, gy + 5 * zoom); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(bx + bw - 3 * zoom, gy + 5 * zoom); ctx.lineTo(bx + bw, gy); ctx.stroke();
-          }
-        }
-
-        // Steel railings
-        ctx.strokeStyle = '#5a6a7a';
-        ctx.lineWidth = 2 * zoom;
-        if (br.horizontal) {
-          ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + bw, by); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.stroke();
-          // Vertical posts
-          ctx.lineWidth = 1.5 * zoom;
-          for (var rp = bx; rp <= bx + bw; rp += 12 * zoom) {
-            ctx.beginPath(); ctx.moveTo(rp, by - 2 * zoom); ctx.lineTo(rp, by + 2 * zoom); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(rp, by + bh - 2 * zoom); ctx.lineTo(rp, by + bh + 2 * zoom); ctx.stroke();
-          }
-        } else {
-          ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx, by + bh); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw, by + bh); ctx.stroke();
-          ctx.lineWidth = 1.5 * zoom;
-          for (var rp = by; rp <= by + bh; rp += 12 * zoom) {
-            ctx.beginPath(); ctx.moveTo(bx - 2 * zoom, rp); ctx.lineTo(bx + 2 * zoom, rp); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(bx + bw - 2 * zoom, rp); ctx.lineTo(bx + bw + 2 * zoom, rp); ctx.stroke();
-          }
-        }
-
-        // Center lane line
-        ctx.strokeStyle = '#ee0';
-        ctx.lineWidth = 1 * zoom;
-        ctx.setLineDash([8 * zoom, 6 * zoom]);
-        if (br.horizontal) {
-          ctx.beginPath(); ctx.moveTo(bx, by + bh / 2); ctx.lineTo(bx + bw, by + bh / 2); ctx.stroke();
-        } else {
-          ctx.beginPath(); ctx.moveTo(bx + bw / 2, by); ctx.lineTo(bx + bw / 2, by + bh); ctx.stroke();
-        }
-        ctx.setLineDash([]);
-      }
-    }
-  }
 
   function drawGround() {
     var zoom = getZoom();
@@ -2117,21 +2033,18 @@
       ctx.stroke();
     }
 
-    // Draw roads (varied types)
-    drawRoads();
-
-    // Draw rivers (under bridges)
+    // Draw rivers first (under roads)
     for (var ri = 0; ri < rivers.length; ri++) {
       drawRiver(rivers[ri]);
     }
 
-    // Draw lakes (under bridges)
+    // Draw lakes first (under roads)
     for (var li = 0; li < lakes.length; li++) {
       drawLake(lakes[li]);
     }
 
-    // Draw bridges ON TOP of water
-    drawBridges();
+    // Draw roads (varied types, split around water)
+    drawRoads();
 
     // Draw world details on roads/sidewalks
     drawWorldDetails();
