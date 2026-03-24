@@ -299,6 +299,7 @@
   var roadSegments = []; // {x1,y1,x2,y2,type:'city'|'highway'|'dirt',width}
   var manholes = [];     // {x,y}
   var roadGrid = {};     // col,row -> blockW, blockH for varied blocks
+  var coveredBridges = []; // {x1,y1,x2,y2,width,vertical}
 
   // World detail objects
   var fireHydrants = [];
@@ -450,48 +451,126 @@
     return false;
   }
 
-  // Find where a road segment first hits water, returns array of non-water sub-segments
+  // Analyze a road segment vs water: returns {landSegments, bridges}
+  // landSegments: array of {x1,y1,x2,y2} sub-segments on land
+  // bridges: array of {x1,y1,x2,y2} sub-segments that cross water briefly (river crossings)
   function splitSegmentAroundWater(x1, y1, x2, y2, width) {
     var hw = (width || 0) / 2;
     var isVert = (x1 === x2);
-    var len = isVert ? Math.abs(y2 - y1) : Math.abs(x2 - x1);
-    var step = 8;
-    var steps = Math.max(1, Math.ceil(len / step));
-    var segments = [];
+    var totalLen = isVert ? Math.abs(y2 - y1) : Math.abs(x2 - x1);
+    var step = 6;
+    var steps = Math.max(1, Math.ceil(totalLen / step));
+    var landSegments = [];
+    var bridges = [];
     var inRoad = false;
+    var inWaterZone = false;
     var segStart = 0;
-    var margin = hw + 15; // extra margin so roads don't get too close to water
+    var waterStart = 0;
+    var totalWaterSteps = 0;
 
+    // First pass: count how much of the segment is over water
     for (var i = 0; i <= steps; i++) {
       var t = i / steps;
       var px = x1 + (x2 - x1) * t;
       var py = y1 + (y2 - y1) * t;
-      var inWater = pointNearWater(px, py, 10);
+      if (pointNearWater(px, py, 5)) totalWaterSteps++;
+    }
 
-      if (!inWater && !inRoad) {
+    var waterFraction = totalWaterSteps / (steps + 1);
+
+    // If more than 40% of road is over water, delete entire segment
+    if (waterFraction > 0.4) {
+      return { landSegments: [], bridges: [] };
+    }
+
+    // Second pass: split into land segments and bridge crossings
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var px = x1 + (x2 - x1) * t;
+      var py = y1 + (y2 - y1) * t;
+      var overWater = pointNearWater(px, py, 5);
+
+      if (!overWater && !inRoad) {
+        // Entering land from water or start
+        if (inWaterZone) {
+          // We just exited a water crossing - record bridge
+          var wLen = (t - waterStart) * totalLen;
+          if (wLen > 5) { // minimum bridge length
+            bridges.push({
+              x1: x1 + (x2 - x1) * waterStart,
+              y1: y1 + (y2 - y1) * waterStart,
+              x2: x1 + (x2 - x1) * t,
+              y2: y1 + (y2 - y1) * t
+            });
+          }
+          inWaterZone = false;
+        }
         inRoad = true;
         segStart = t;
-      } else if (inWater && inRoad) {
+      } else if (overWater && inRoad) {
+        // Entering water from land
         inRoad = false;
-        if (t - segStart > 0.02) { // minimum segment length
-          segments.push({
+        var sLen = (t - segStart) * totalLen;
+        if (sLen >= 60) { // Remove short stubs under 60px
+          landSegments.push({
             x1: x1 + (x2 - x1) * segStart,
             y1: y1 + (y2 - y1) * segStart,
             x2: x1 + (x2 - x1) * t,
             y2: y1 + (y2 - y1) * t
           });
         }
+        inWaterZone = true;
+        waterStart = t;
+      } else if (overWater && !inWaterZone) {
+        inWaterZone = true;
+        waterStart = t;
       }
     }
+    // Close final land segment
     if (inRoad) {
-      segments.push({
-        x1: x1 + (x2 - x1) * segStart,
-        y1: y1 + (y2 - y1) * segStart,
-        x2: x2,
-        y2: y2
-      });
+      var sLen = (1 - segStart) * totalLen;
+      if (sLen >= 60) {
+        landSegments.push({
+          x1: x1 + (x2 - x1) * segStart,
+          y1: y1 + (y2 - y1) * segStart,
+          x2: x2,
+          y2: y2
+        });
+      }
     }
-    return segments;
+    // Close final water crossing (bridge)
+    if (inWaterZone) {
+      var wLen = (1 - waterStart) * totalLen;
+      if (wLen > 5) {
+        bridges.push({
+          x1: x1 + (x2 - x1) * waterStart,
+          y1: y1 + (y2 - y1) * waterStart,
+          x2: x2,
+          y2: y2
+        });
+      }
+    }
+
+    return { landSegments: landSegments, bridges: bridges };
+  }
+
+  // Check if a point is on a covered bridge
+  function pointOnBridge(px, py, margin) {
+    margin = margin || 0;
+    for (var bi = 0; bi < coveredBridges.length; bi++) {
+      var br = coveredBridges[bi];
+      var hw = br.width / 2 + margin;
+      if (br.vertical) {
+        var minY = Math.min(br.y1, br.y2);
+        var maxY = Math.max(br.y1, br.y2);
+        if (py >= minY - 5 && py <= maxY + 5 && Math.abs(px - br.x1) < hw) return true;
+      } else {
+        var minX = Math.min(br.x1, br.x2);
+        var maxX = Math.max(br.x1, br.x2);
+        if (px >= minX - 5 && px <= maxX + 5 && Math.abs(py - br.y1) < hw) return true;
+      }
+    }
+    return false;
   }
 
   function pointInPark(px, py) {
@@ -687,6 +766,8 @@
     }
 
     // Now build proper road segments, splitting around water
+    coveredBridges = [];
+
     // Vertical roads
     for (var c = 0; c <= cols; c++) {
       var isHW = isHighwayCol(c, hwCols);
@@ -695,12 +776,24 @@
       var type = isHW ? 'highway' : (isEdge ? 'dirt' : 'city');
       var rx = colX[c] + rw / 2;
       // Split this road around water bodies
-      var subSegs = splitSegmentAroundWater(rx, 0, rx, worldH, rw);
-      for (var ss = 0; ss < subSegs.length; ss++) {
+      var result = splitSegmentAroundWater(rx, 0, rx, worldH, rw);
+      for (var ss = 0; ss < result.landSegments.length; ss++) {
         roadSegments.push({
-          x1: subSegs[ss].x1, y1: subSegs[ss].y1,
-          x2: subSegs[ss].x2, y2: subSegs[ss].y2,
+          x1: result.landSegments[ss].x1, y1: result.landSegments[ss].y1,
+          x2: result.landSegments[ss].x2, y2: result.landSegments[ss].y2,
           width: rw, type: type, vertical: true, index: c
+        });
+      }
+      for (var bb = 0; bb < result.bridges.length; bb++) {
+        var bSeg = result.bridges[bb];
+        coveredBridges.push({
+          x1: bSeg.x1, y1: bSeg.y1, x2: bSeg.x2, y2: bSeg.y2,
+          width: rw, vertical: true, type: type
+        });
+        // Also add as a road segment so cars/blender can use it
+        roadSegments.push({
+          x1: bSeg.x1, y1: bSeg.y1, x2: bSeg.x2, y2: bSeg.y2,
+          width: rw, type: type, vertical: true, index: c, isBridge: true
         });
       }
     }
@@ -713,12 +806,24 @@
       var type = isHW ? 'highway' : (isEdge ? 'dirt' : 'city');
       var ry = rowY[r] + rh / 2;
       // Split this road around water bodies
-      var subSegs = splitSegmentAroundWater(0, ry, worldW, ry, rh);
-      for (var ss = 0; ss < subSegs.length; ss++) {
+      var result = splitSegmentAroundWater(0, ry, worldW, ry, rh);
+      for (var ss = 0; ss < result.landSegments.length; ss++) {
         roadSegments.push({
-          x1: subSegs[ss].x1, y1: subSegs[ss].y1,
-          x2: subSegs[ss].x2, y2: subSegs[ss].y2,
+          x1: result.landSegments[ss].x1, y1: result.landSegments[ss].y1,
+          x2: result.landSegments[ss].x2, y2: result.landSegments[ss].y2,
           width: rh, type: type, horizontal: true, index: r
+        });
+      }
+      for (var bb = 0; bb < result.bridges.length; bb++) {
+        var bSeg = result.bridges[bb];
+        coveredBridges.push({
+          x1: bSeg.x1, y1: bSeg.y1, x2: bSeg.x2, y2: bSeg.y2,
+          width: rh, vertical: false, type: type
+        });
+        // Also add as a road segment so cars/blender can use it
+        roadSegments.push({
+          x1: bSeg.x1, y1: bSeg.y1, x2: bSeg.x2, y2: bSeg.y2,
+          width: rh, type: type, horizontal: true, index: r, isBridge: true
         });
       }
     }
@@ -952,7 +1057,7 @@
 
           var bx = blockX + 15 + Math.random() * (blockW - 80);
           var by = blockY + 15 + Math.random() * (blockH - 80);
-          if (pointNearWater(bx, by, 25)) continue;
+          if (pointNearWater(bx, by, 40)) continue;
           var building = makeBuilding(bx, by, sizeClass);
           buildings.push(building);
           if (building.w > maxBuildingW) maxBuildingW = building.w;
@@ -1053,17 +1158,17 @@
       }
     }
 
-    // Spawn moving cars on roads (including highways)
+    // Spawn moving cars on roads (including highways) - only on valid non-water positions
     cars = [];
     var numCars = 20 + lvl * 8;
     for (var ci = 0; ci < numCars; ci++) {
-      // Pick a random road segment
+      // Pick a random road segment (skip bridge-only segments for spawning preference)
       var segIdx = Math.floor(Math.random() * roadSegments.length);
       var seg = roadSegments[segIdx];
       // Prefer highways for some cars
       if (Math.random() > 0.6) {
         for (var si2 = 0; si2 < roadSegments.length; si2++) {
-          if (roadSegments[si2].type === 'highway') { seg = roadSegments[si2]; break; }
+          if (roadSegments[si2].type === 'highway' && !roadSegments[si2].isBridge) { seg = roadSegments[si2]; break; }
         }
       }
       var isVert = seg.vertical;
@@ -1077,6 +1182,8 @@
         rx = seg.x1 + Math.random() * (seg.x2 - seg.x1);
         ry = seg.y1 + laneOffset;
       }
+      // Skip if spawn position is in water and not on a bridge
+      if (pointInWater(rx, ry) && !pointOnBridge(rx, ry, 5)) continue;
       var sp = seg.type === 'highway' ? (1.0 + Math.random() * 1.5) : (seg.type === 'dirt' ? (0.3 + Math.random() * 0.5) : (0.5 + Math.random() * 1.2));
       cars.push({
         x: rx, y: ry, horizontal: !isVert, dir: carDir,
@@ -1236,11 +1343,11 @@
     var newX = player.x + playerVX;
     var newY = player.y + playerVY;
 
-    if (pointInWater(newX, newY)) {
-      if (!pointInWater(player.x, newY)) {
+    if (pointInWater(newX, newY) && !pointOnBridge(newX, newY, 5)) {
+      if (!pointInWater(player.x, newY) || pointOnBridge(player.x, newY, 5)) {
         newX = player.x;
         playerVX = -playerVX * 0.3;
-      } else if (!pointInWater(newX, player.y)) {
+      } else if (!pointInWater(newX, player.y) || pointOnBridge(newX, player.y, 5)) {
         newY = player.y;
         playerVY = -playerVY * 0.3;
       } else {
@@ -1364,11 +1471,26 @@
       document.getElementById('too-small').style.opacity = tooSmallTimer > 0 ? '1' : '0';
     }
 
-    // Update cars
+    // Update cars - must stay on roads or bridges
     for (var i = 0; i < cars.length; i++) {
       var c = cars[i];
-      if (c.horizontal) { c.x += c.speed * c.dir; if (c.x > worldW + 30) c.x = -30; if (c.x < -30) c.x = worldW + 30; }
-      else { c.y += c.speed * c.dir; if (c.y > worldH + 30) c.y = -30; if (c.y < -30) c.y = worldH + 30; }
+      var nextX = c.x, nextY = c.y;
+      if (c.horizontal) { nextX += c.speed * c.dir; }
+      else { nextY += c.speed * c.dir; }
+      // Check if next position is on a road or bridge
+      var onRoadNext = pointOnRoad(nextX, nextY, 5) || pointOnBridge(nextX, nextY, 5);
+      if (onRoadNext) {
+        c.x = nextX;
+        c.y = nextY;
+      } else {
+        // Reverse direction
+        c.dir *= -1;
+      }
+      // Wrap around world edges
+      if (c.x > worldW + 30) c.x = -30;
+      if (c.x < -30) c.x = worldW + 30;
+      if (c.y > worldH + 30) c.y = -30;
+      if (c.y < -30) c.y = worldH + 30;
     }
 
     // Update people
@@ -1993,6 +2115,292 @@
   }
 
 
+  function drawCoveredBridges() {
+    var zoom = getZoom();
+    for (var bi = 0; bi < coveredBridges.length; bi++) {
+      var br = coveredBridges[bi];
+      var isVert = br.vertical;
+      var hw = br.width / 2;
+      var bLen, sx1, sy1, bw, bh;
+
+      if (isVert) {
+        sx1 = (br.x1 - hw - camX) * zoom;
+        sy1 = (br.y1 - camY) * zoom;
+        bw = br.width * zoom;
+        bh = (br.y2 - br.y1) * zoom;
+        bLen = br.y2 - br.y1;
+      } else {
+        sx1 = (br.x1 - camX) * zoom;
+        sy1 = (br.y1 - hw - camY) * zoom;
+        bw = (br.x2 - br.x1) * zoom;
+        bh = br.width * zoom;
+        bLen = br.x2 - br.x1;
+      }
+
+      // Skip if off screen
+      if (sx1 + bw + 20 < 0 || sx1 - 20 > W || sy1 + bh + 20 < 0 || sy1 - 20 > H) continue;
+
+      // Shadow underneath
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(sx1 + 3 * zoom, sy1 + 3 * zoom, isVert ? bw : bw, isVert ? bh : bh);
+
+      // Road deck / floor of bridge
+      ctx.fillStyle = '#6a5a48';
+      ctx.fillRect(sx1, sy1, isVert ? bw : bw, isVert ? bh : bh);
+
+      // Road surface inside
+      ctx.fillStyle = '#555';
+      var inset = 3 * zoom;
+      ctx.fillRect(sx1 + inset, sy1 + inset, (isVert ? bw : bw) - inset * 2, (isVert ? bh : bh) - inset * 2);
+
+      // Wooden beam structure - side walls
+      var wallColor = '#5a4030';
+      var wallDark = '#3a2a1a';
+      var beamSpacing = 18 * zoom;
+
+      if (isVert) {
+        // Left wall
+        ctx.fillStyle = wallDark;
+        ctx.fillRect(sx1 - 2 * zoom, sy1, 4 * zoom, bh);
+        // Right wall
+        ctx.fillRect(sx1 + bw - 2 * zoom, sy1, 4 * zoom, bh);
+
+        // Vertical beams along walls
+        ctx.fillStyle = wallColor;
+        for (var bPos = sy1; bPos < sy1 + bh; bPos += beamSpacing) {
+          // Left side vertical beam
+          ctx.fillRect(sx1 - 1 * zoom, bPos, 3 * zoom, beamSpacing * 0.85);
+          // Right side vertical beam
+          ctx.fillRect(sx1 + bw - 2 * zoom, bPos, 3 * zoom, beamSpacing * 0.85);
+
+          // Cross braces (X pattern)
+          ctx.strokeStyle = '#4a3525';
+          ctx.lineWidth = 1.5 * zoom;
+          // Left side brace
+          ctx.beginPath();
+          ctx.moveTo(sx1, bPos);
+          ctx.lineTo(sx1 - 1 * zoom, bPos + beamSpacing * 0.85);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(sx1 - 1 * zoom, bPos);
+          ctx.lineTo(sx1, bPos + beamSpacing * 0.85);
+          ctx.stroke();
+          // Right side brace
+          ctx.beginPath();
+          ctx.moveTo(sx1 + bw, bPos);
+          ctx.lineTo(sx1 + bw + 1 * zoom, bPos + beamSpacing * 0.85);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(sx1 + bw + 1 * zoom, bPos);
+          ctx.lineTo(sx1 + bw, bPos + beamSpacing * 0.85);
+          ctx.stroke();
+        }
+
+        // Peaked roof
+        var roofOverhang = 4 * zoom;
+        var roofHeight = 8 * zoom;
+        var roofColor = '#7a3020';
+        var roofHighlight = '#8a4030';
+
+        // Roof - left slope
+        ctx.fillStyle = roofColor;
+        ctx.beginPath();
+        ctx.moveTo(sx1 - roofOverhang, sy1);
+        ctx.lineTo(sx1 + bw / 2, sy1 - roofHeight);
+        ctx.lineTo(sx1 + bw / 2, sy1 + bh - 0);
+        ctx.lineTo(sx1 - roofOverhang, sy1 + bh);
+        ctx.closePath();
+        ctx.fill();
+
+        // Roof - right slope
+        ctx.fillStyle = roofHighlight;
+        ctx.beginPath();
+        ctx.moveTo(sx1 + bw + roofOverhang, sy1);
+        ctx.lineTo(sx1 + bw / 2, sy1 - roofHeight);
+        ctx.lineTo(sx1 + bw / 2, sy1 + bh);
+        ctx.lineTo(sx1 + bw + roofOverhang, sy1 + bh);
+        ctx.closePath();
+        ctx.fill();
+
+        // Ridge line
+        ctx.strokeStyle = '#5a2015';
+        ctx.lineWidth = 2 * zoom;
+        ctx.beginPath();
+        ctx.moveTo(sx1 + bw / 2, sy1 - roofHeight);
+        ctx.lineTo(sx1 + bw / 2, sy1 + bh);
+        ctx.stroke();
+
+        // Eave lines
+        ctx.strokeStyle = '#4a2a18';
+        ctx.lineWidth = 1.5 * zoom;
+        ctx.beginPath();
+        ctx.moveTo(sx1 - roofOverhang, sy1);
+        ctx.lineTo(sx1 - roofOverhang, sy1 + bh);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(sx1 + bw + roofOverhang, sy1);
+        ctx.lineTo(sx1 + bw + roofOverhang, sy1 + bh);
+        ctx.stroke();
+
+        // Entrance/exit openings - triangular gable ends
+        ctx.fillStyle = '#2a1a0a';
+        // Top end
+        ctx.beginPath();
+        ctx.moveTo(sx1 - roofOverhang, sy1);
+        ctx.lineTo(sx1 + bw / 2, sy1 - roofHeight);
+        ctx.lineTo(sx1 + bw + roofOverhang, sy1);
+        ctx.closePath();
+        ctx.fill();
+        // Bottom end
+        ctx.beginPath();
+        ctx.moveTo(sx1 - roofOverhang, sy1 + bh);
+        ctx.lineTo(sx1 + bw / 2, sy1 + bh - roofHeight);
+        ctx.lineTo(sx1 + bw + roofOverhang, sy1 + bh);
+        ctx.closePath();
+        ctx.fill();
+
+        // Opening arch at each end
+        ctx.fillStyle = '#1a0a00';
+        ctx.beginPath();
+        ctx.arc(sx1 + bw / 2, sy1, bw / 2 - 2 * zoom, Math.PI, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx1 + bw / 2, sy1 + bh, bw / 2 - 2 * zoom, Math.PI, 0);
+        ctx.closePath();
+        ctx.fill();
+
+      } else {
+        // Horizontal bridge
+        // Top wall
+        ctx.fillStyle = wallDark;
+        ctx.fillRect(sx1, sy1 - 2 * zoom, bw, 4 * zoom);
+        // Bottom wall
+        ctx.fillRect(sx1, sy1 + bh - 2 * zoom, bw, 4 * zoom);
+
+        // Vertical beams along walls
+        ctx.fillStyle = wallColor;
+        for (var bPos = sx1; bPos < sx1 + bw; bPos += beamSpacing) {
+          // Top side beam
+          ctx.fillRect(bPos, sy1 - 1 * zoom, beamSpacing * 0.85, 3 * zoom);
+          // Bottom side beam
+          ctx.fillRect(bPos, sy1 + bh - 2 * zoom, beamSpacing * 0.85, 3 * zoom);
+
+          // Cross braces
+          ctx.strokeStyle = '#4a3525';
+          ctx.lineWidth = 1.5 * zoom;
+          ctx.beginPath();
+          ctx.moveTo(bPos, sy1);
+          ctx.lineTo(bPos + beamSpacing * 0.85, sy1 - 1 * zoom);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(bPos, sy1 - 1 * zoom);
+          ctx.lineTo(bPos + beamSpacing * 0.85, sy1);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(bPos, sy1 + bh);
+          ctx.lineTo(bPos + beamSpacing * 0.85, sy1 + bh + 1 * zoom);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(bPos, sy1 + bh + 1 * zoom);
+          ctx.lineTo(bPos + beamSpacing * 0.85, sy1 + bh);
+          ctx.stroke();
+        }
+
+        // Peaked roof (viewed from top-down, so roof runs along length)
+        var roofOverhang = 4 * zoom;
+        var roofHeight = 8 * zoom;
+        var roofColor = '#7a3020';
+        var roofHighlight = '#8a4030';
+
+        // Roof - top slope
+        ctx.fillStyle = roofColor;
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1 - roofOverhang);
+        ctx.lineTo(sx1, sy1 + bh / 2);
+        ctx.lineTo(sx1 + bw, sy1 + bh / 2);
+        ctx.lineTo(sx1 + bw, sy1 - roofOverhang);
+        ctx.closePath();
+        ctx.fill();
+
+        // Roof - bottom slope
+        ctx.fillStyle = roofHighlight;
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1 + bh + roofOverhang);
+        ctx.lineTo(sx1, sy1 + bh / 2);
+        ctx.lineTo(sx1 + bw, sy1 + bh / 2);
+        ctx.lineTo(sx1 + bw, sy1 + bh + roofOverhang);
+        ctx.closePath();
+        ctx.fill();
+
+        // Ridge line
+        ctx.strokeStyle = '#5a2015';
+        ctx.lineWidth = 2 * zoom;
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1 + bh / 2);
+        ctx.lineTo(sx1 + bw, sy1 + bh / 2);
+        ctx.stroke();
+
+        // Eave lines
+        ctx.strokeStyle = '#4a2a18';
+        ctx.lineWidth = 1.5 * zoom;
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1 - roofOverhang);
+        ctx.lineTo(sx1 + bw, sy1 - roofOverhang);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1 + bh + roofOverhang);
+        ctx.lineTo(sx1 + bw, sy1 + bh + roofOverhang);
+        ctx.stroke();
+
+        // Gable ends
+        ctx.fillStyle = '#2a1a0a';
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1 - roofOverhang);
+        ctx.lineTo(sx1, sy1 + bh + roofOverhang);
+        ctx.lineTo(sx1 - roofHeight, sy1 + bh / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(sx1 + bw, sy1 - roofOverhang);
+        ctx.lineTo(sx1 + bw, sy1 + bh + roofOverhang);
+        ctx.lineTo(sx1 + bw + roofHeight, sy1 + bh / 2);
+        ctx.closePath();
+        ctx.fill();
+
+        // Arch openings
+        ctx.fillStyle = '#1a0a00';
+        ctx.beginPath();
+        ctx.arc(sx1, sy1 + bh / 2, bh / 2 - 2 * zoom, -Math.PI / 2, Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx1 + bw, sy1 + bh / 2, bh / 2 - 2 * zoom, -Math.PI / 2, Math.PI / 2);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Wooden plank texture on road surface
+      ctx.strokeStyle = 'rgba(90,70,50,0.3)';
+      ctx.lineWidth = 0.8 * zoom;
+      if (isVert) {
+        for (var py = sy1; py < sy1 + bh; py += 4 * zoom) {
+          ctx.beginPath();
+          ctx.moveTo(sx1 + inset, py);
+          ctx.lineTo(sx1 + bw - inset, py);
+          ctx.stroke();
+        }
+      } else {
+        for (var px = sx1; px < sx1 + bw; px += 4 * zoom) {
+          ctx.beginPath();
+          ctx.moveTo(px, sy1 + inset);
+          ctx.lineTo(px, sy1 + bh - inset);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
   function drawGround() {
     var zoom = getZoom();
 
@@ -2045,6 +2453,9 @@
 
     // Draw roads (varied types, split around water)
     drawRoads();
+
+    // Draw covered bridges over water
+    drawCoveredBridges();
 
     // Draw world details on roads/sidewalks
     drawWorldDetails();
@@ -2488,50 +2899,104 @@
 
     ctx.save();
 
+    // Cracked earth rim - chunks of concrete/asphalt breaking away
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 8 * zoom, 0, Math.PI * 2);
-    var rimGrad = ctx.createRadialGradient(sx, sy, r - 2 * zoom, sx, sy, r + 8 * zoom);
-    rimGrad.addColorStop(0, 'rgba(60,40,20,0.6)');
-    rimGrad.addColorStop(0.5, 'rgba(80,60,30,0.3)');
+    ctx.arc(sx, sy, r + 10 * zoom, 0, Math.PI * 2);
+    var rimGrad = ctx.createRadialGradient(sx, sy, r - 2 * zoom, sx, sy, r + 10 * zoom);
+    rimGrad.addColorStop(0, 'rgba(50,40,30,0.7)');
+    rimGrad.addColorStop(0.3, 'rgba(70,55,35,0.5)');
+    rimGrad.addColorStop(0.7, 'rgba(40,30,15,0.2)');
     rimGrad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = rimGrad;
     ctx.fill();
 
-    ctx.strokeStyle = 'rgba(40,30,15,0.4)';
-    ctx.lineWidth = 1;
-    for (var c = 0; c < 12; c++) {
-      var ca = (Math.PI * 2 / 12) * c + bladeAngle * 0.02;
+    // Concrete/asphalt chunks around the rim
+    for (var ch = 0; ch < 18; ch++) {
+      var chA = (Math.PI * 2 / 18) * ch + bladeAngle * 0.01 + Math.sin(ch * 5.7) * 0.3;
+      var chDist = r + (3 + Math.sin(ch * 3.7) * 4) * zoom;
+      var chSize = (3 + Math.sin(ch * 2.3) * 2) * zoom;
+      var chx = sx + Math.cos(chA) * chDist;
+      var chy = sy + Math.sin(chA) * chDist;
+      // Concrete chunk
+      ctx.fillStyle = 'rgba(90,80,70,' + (0.4 + Math.sin(ch * 4.1) * 0.15) + ')';
       ctx.beginPath();
-      ctx.moveTo(sx + Math.cos(ca) * r * 0.95, sy + Math.sin(ca) * r * 0.95);
-      ctx.lineTo(sx + Math.cos(ca) * (r + (6 + Math.sin(c * 3) * 3) * zoom), sy + Math.sin(ca) * (r + (6 + Math.sin(c * 3) * 3) * zoom));
-      ctx.stroke();
+      ctx.moveTo(chx, chy - chSize * 0.6);
+      ctx.lineTo(chx + chSize * 0.8, chy - chSize * 0.2);
+      ctx.lineTo(chx + chSize * 0.5, chy + chSize * 0.6);
+      ctx.lineTo(chx - chSize * 0.4, chy + chSize * 0.4);
+      ctx.lineTo(chx - chSize * 0.7, chy - chSize * 0.1);
+      ctx.closePath();
+      ctx.fill();
     }
 
+    // Cracks radiating outward
+    ctx.strokeStyle = 'rgba(30,25,15,0.5)';
+    ctx.lineWidth = 1.2 * zoom;
+    for (var c = 0; c < 16; c++) {
+      var ca = (Math.PI * 2 / 16) * c + bladeAngle * 0.015;
+      var crLen = (5 + Math.sin(c * 7.3) * 4) * zoom;
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(ca) * r * 0.97, sy + Math.sin(ca) * r * 0.97);
+      var midX = sx + Math.cos(ca + 0.1) * (r + crLen * 0.5);
+      var midY = sy + Math.sin(ca + 0.1) * (r + crLen * 0.5);
+      ctx.lineTo(midX, midY);
+      ctx.lineTo(sx + Math.cos(ca - 0.05) * (r + crLen), sy + Math.sin(ca - 0.05) * (r + crLen));
+      ctx.stroke();
+      // Branch crack
+      if (c % 3 === 0) {
+        ctx.beginPath();
+        ctx.moveTo(midX, midY);
+        ctx.lineTo(midX + Math.cos(ca + 0.8) * crLen * 0.4, midY + Math.sin(ca + 0.8) * crLen * 0.4);
+        ctx.stroke();
+      }
+    }
+
+    // Outer rim ring
     ctx.beginPath();
     ctx.arc(sx, sy, r + 3 * zoom, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.fill();
 
+    // Rivets/bolts around the outer rim
+    var numRivets = 24;
+    for (var rv = 0; rv < numRivets; rv++) {
+      var rvA = (Math.PI * 2 / numRivets) * rv;
+      var rvx = sx + Math.cos(rvA) * (r + 1.5 * zoom);
+      var rvy = sy + Math.sin(rvA) * (r + 1.5 * zoom);
+      ctx.beginPath();
+      ctx.arc(rvx, rvy, 1.3 * zoom, 0, Math.PI * 2);
+      ctx.fillStyle = '#888';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(rvx - 0.3 * zoom, rvy - 0.3 * zoom, 0.6 * zoom, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fill();
+    }
+
+    // Deeper, darker hole gradient
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
     var grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
-    grad.addColorStop(0, '#020204');
-    grad.addColorStop(0.3, '#060610');
-    grad.addColorStop(0.6, '#0a0a18');
-    grad.addColorStop(0.85, '#141428');
-    grad.addColorStop(1, '#1e1e38');
+    grad.addColorStop(0, '#000002');
+    grad.addColorStop(0.2, '#020206');
+    grad.addColorStop(0.4, '#04040c');
+    grad.addColorStop(0.65, '#080816');
+    grad.addColorStop(0.85, '#101025');
+    grad.addColorStop(1, '#181835');
     ctx.fillStyle = grad;
     ctx.fill();
 
-    for (var dr = 0; dr < 4; dr++) {
-      var ringR = r * (0.3 + dr * 0.18);
+    // Dark depth rings
+    for (var dr = 0; dr < 5; dr++) {
+      var ringR = r * (0.2 + dr * 0.16);
       ctx.beginPath();
       ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(100,100,140,' + (0.06 - dr * 0.01) + ')';
+      ctx.strokeStyle = 'rgba(80,80,120,' + (0.05 - dr * 0.008) + ')';
       ctx.lineWidth = 1;
       ctx.stroke();
     }
 
+    // Spiral vortex lines
     for (var s = 0; s < 3; s++) {
       var startA = bladeAngle * 1.5 + (Math.PI * 2 / 3) * s;
       ctx.beginPath();
@@ -2542,87 +3007,178 @@
         if (a === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
-      ctx.strokeStyle = 'rgba(232,93,38,0.2)';
+      ctx.strokeStyle = 'rgba(180,180,200,0.12)';
       ctx.lineWidth = 1.2;
       ctx.stroke();
     }
 
-    for (var i = 0; i < 6; i++) {
-      var a = bladeAngle + (Math.PI / 3) * i;
-      var innerR = r * 0.12;
-      var outerR = r * 0.9;
+    // 8 main blades - thinner, sharper, metallic silver/steel with orange accents
+    for (var i = 0; i < 8; i++) {
+      var a = bladeAngle + (Math.PI / 4) * i;
+      var innerR = r * 0.14;
+      var outerR = r * 0.92;
 
+      // Main blade shape - thinner and sharper
       ctx.beginPath();
       ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR);
       ctx.quadraticCurveTo(
-        sx + Math.cos(a + 0.35) * r * 0.55,
-        sy + Math.sin(a + 0.35) * r * 0.55,
-        sx + Math.cos(a + 0.08) * outerR,
-        sy + Math.sin(a + 0.08) * outerR
+        sx + Math.cos(a + 0.25) * r * 0.55,
+        sy + Math.sin(a + 0.25) * r * 0.55,
+        sx + Math.cos(a + 0.05) * outerR,
+        sy + Math.sin(a + 0.05) * outerR
       );
-      ctx.lineTo(sx + Math.cos(a - 0.04) * outerR, sy + Math.sin(a - 0.04) * outerR);
+      ctx.lineTo(sx + Math.cos(a - 0.03) * outerR, sy + Math.sin(a - 0.03) * outerR);
       ctx.quadraticCurveTo(
-        sx + Math.cos(a + 0.15) * r * 0.45,
-        sy + Math.sin(a + 0.15) * r * 0.45,
+        sx + Math.cos(a + 0.10) * r * 0.42,
+        sy + Math.sin(a + 0.10) * r * 0.42,
         sx + Math.cos(a) * innerR,
         sy + Math.sin(a) * innerR
       );
       ctx.closePath();
-      ctx.fillStyle = 'rgba(200,90,30,0.5)';
+      // Metallic steel/silver fill
+      ctx.fillStyle = 'rgba(180,185,195,0.45)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(232,93,38,0.7)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(200,205,215,0.6)';
+      ctx.lineWidth = 1.2;
       ctx.stroke();
 
+      // Orange accent edge highlight
       ctx.beginPath();
       ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR);
       ctx.quadraticCurveTo(
-        sx + Math.cos(a + 0.35) * r * 0.55,
-        sy + Math.sin(a + 0.35) * r * 0.55,
-        sx + Math.cos(a + 0.08) * outerR,
-        sy + Math.sin(a + 0.08) * outerR
+        sx + Math.cos(a + 0.25) * r * 0.55,
+        sy + Math.sin(a + 0.25) * r * 0.55,
+        sx + Math.cos(a + 0.05) * outerR,
+        sy + Math.sin(a + 0.05) * outerR
       );
-      ctx.strokeStyle = 'rgba(255,160,80,0.35)';
+      ctx.strokeStyle = 'rgba(232,140,60,0.4)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Serrations / teeth along the blade leading edge
+      var numTeeth = 6;
+      for (var t = 0; t < numTeeth; t++) {
+        var tf = 0.25 + (t / numTeeth) * 0.65;
+        // Point along leading edge of blade
+        var edgeA = a + 0.25 * (1 - tf) + 0.05 * tf;
+        var edgeR = innerR + (outerR - innerR) * tf;
+        var ex = sx + Math.cos(edgeA) * edgeR;
+        var ey = sy + Math.sin(edgeA) * edgeR;
+        // Tooth points outward perpendicular to blade
+        var toothLen = 2.5 * zoom;
+        var perpA = edgeA + Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex + Math.cos(perpA) * toothLen, ey + Math.sin(perpA) * toothLen);
+        ctx.lineTo(ex + Math.cos(edgeA) * 1.5 * zoom, ey + Math.sin(edgeA) * 1.5 * zoom);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(200,200,210,0.5)';
+        ctx.fill();
+      }
+    }
+
+    // Secondary inner ring of smaller blades spinning opposite direction
+    var innerBladeCount = 6;
+    var innerBladeR = r * 0.35;
+    for (var i = 0; i < innerBladeCount; i++) {
+      var a = -bladeAngle * 1.4 + (Math.PI * 2 / innerBladeCount) * i;
+      var iInner = r * 0.14;
+      var iOuter = innerBladeR;
+
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(a) * iInner, sy + Math.sin(a) * iInner);
+      ctx.quadraticCurveTo(
+        sx + Math.cos(a + 0.4) * innerBladeR * 0.6,
+        sy + Math.sin(a + 0.4) * innerBladeR * 0.6,
+        sx + Math.cos(a + 0.06) * iOuter,
+        sy + Math.sin(a + 0.06) * iOuter
+      );
+      ctx.lineTo(sx + Math.cos(a - 0.04) * iOuter, sy + Math.sin(a - 0.04) * iOuter);
+      ctx.quadraticCurveTo(
+        sx + Math.cos(a + 0.15) * innerBladeR * 0.4,
+        sy + Math.sin(a + 0.15) * innerBladeR * 0.4,
+        sx + Math.cos(a) * iInner,
+        sy + Math.sin(a) * iInner
+      );
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(232,120,50,0.4)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,160,80,0.5)';
       ctx.lineWidth = 1;
       ctx.stroke();
     }
 
-    var hubR = r * 0.12;
+    // Hexagonal hub - industrial look
+    var hubR = r * 0.13;
     ctx.beginPath();
-    ctx.arc(sx, sy, hubR, 0, Math.PI * 2);
+    for (var h = 0; h < 6; h++) {
+      var ha = (Math.PI / 3) * h - Math.PI / 6;
+      var hx = sx + Math.cos(ha) * hubR;
+      var hy = sy + Math.sin(ha) * hubR;
+      if (h === 0) ctx.moveTo(hx, hy);
+      else ctx.lineTo(hx, hy);
+    }
+    ctx.closePath();
     var hubGrad = ctx.createRadialGradient(sx - hubR * 0.3, sy - hubR * 0.3, 0, sx, sy, hubR);
-    hubGrad.addColorStop(0, '#ff8040');
-    hubGrad.addColorStop(0.5, '#e85d26');
-    hubGrad.addColorStop(1, '#a03010');
+    hubGrad.addColorStop(0, '#c0c0c8');
+    hubGrad.addColorStop(0.4, '#a0a0a8');
+    hubGrad.addColorStop(0.7, '#808088');
+    hubGrad.addColorStop(1, '#606068');
     ctx.fillStyle = hubGrad;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,200,150,0.4)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(200,200,210,0.5)';
+    ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    for (var b = 0; b < 4; b++) {
-      var ba = bladeAngle * 0.5 + (Math.PI / 2) * b;
+    // Orange accent ring inside hub
+    ctx.beginPath();
+    ctx.arc(sx, sy, hubR * 0.6, 0, Math.PI * 2);
+    ctx.fillStyle = '#e85d26';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(sx, sy, hubR * 0.35, 0, Math.PI * 2);
+    ctx.fillStyle = '#c04010';
+    ctx.fill();
+
+    // Hub bolts (6 around hexagon vertices)
+    for (var b = 0; b < 6; b++) {
+      var ba = (Math.PI / 3) * b - Math.PI / 6;
+      var bx = sx + Math.cos(ba) * hubR * 0.75;
+      var by = sy + Math.sin(ba) * hubR * 0.75;
       ctx.beginPath();
-      ctx.arc(sx + Math.cos(ba) * hubR * 0.6, sy + Math.sin(ba) * hubR * 0.6, 1.2 * zoom, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.arc(bx, by, 1.5 * zoom, 0, Math.PI * 2);
+      ctx.fillStyle = '#555';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(bx - 0.3 * zoom, by - 0.3 * zoom, 0.7 * zoom, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
       ctx.fill();
     }
 
+    // Outer steel rim
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = '#3a3020';
-    ctx.lineWidth = 3 * zoom;
+    ctx.strokeStyle = '#4a4540';
+    ctx.lineWidth = 3.5 * zoom;
     ctx.stroke();
+    // Metallic highlight on rim
     ctx.beginPath();
-    ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(232,93,38,0.2)';
+    ctx.arc(sx, sy, r, -Math.PI * 0.3, Math.PI * 0.2);
+    ctx.strokeStyle = 'rgba(180,175,165,0.2)';
+    ctx.lineWidth = 2 * zoom;
+    ctx.stroke();
+    // Orange inner ring glow
+    ctx.beginPath();
+    ctx.arc(sx, sy, r - 1.5 * zoom, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(232,93,38,0.15)';
     ctx.lineWidth = 1;
     ctx.stroke();
 
+    // Center glow
     ctx.beginPath();
-    ctx.arc(sx, sy, r * 0.6, 0, Math.PI * 2);
-    var glowGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 0.6);
-    glowGrad.addColorStop(0, 'rgba(232,93,38,0.06)');
+    ctx.arc(sx, sy, r * 0.5, 0, Math.PI * 2);
+    var glowGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 0.5);
+    glowGrad.addColorStop(0, 'rgba(232,93,38,0.08)');
     glowGrad.addColorStop(1, 'rgba(232,93,38,0)');
     ctx.fillStyle = glowGrad;
     ctx.fill();
