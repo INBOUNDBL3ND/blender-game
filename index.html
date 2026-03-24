@@ -1523,7 +1523,7 @@
 
     if (eaten >= totalBuildings) {
       gameRunning = false;
-      var timeBonus = Math.floor(timeLeft) * 10;
+      var timeBonus = Math.floor(timerLeft) * 10;
       score += timeBonus;
       document.getElementById('score').textContent = score;
       level++;
